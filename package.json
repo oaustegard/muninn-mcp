@@ -7,7 +7,12 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/tools.test.ts"
+    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/tools.test.ts",
+    "harness": "npm run harness:blue && npm run harness:green && npm run harness:diff",
+    "harness:blue": "python3 harness/blue.py",
+    "harness:green": "node --experimental-strip-types harness/green.mjs",
+    "harness:diff": "node harness/diff.mjs",
+    "harness:fts": "python3 harness/regen-fts-vectors.py"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",
