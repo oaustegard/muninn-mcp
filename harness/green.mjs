@@ -23,14 +23,18 @@
  *
  * ------------------------------------------------------------- IMPORT SURFACE
  *
- * We import ONLY `db` and `search` from turso.ts, plus `recall` from tools.ts.
- * src/turso.ts is under concurrent development (withRetry, normalizeUrl,
- * escapeLike, cooccurrenceExpand are all landing). Binding this harness to a
- * wide surface would make the gate break every time the port progresses, which
- * is precisely backwards — the gate should break when RESULTS change.
+ * We import `db`/`search`/`buildSearch` from turso.ts, `recallWithExpansion`
+ * from expansion.ts, and `recall` from tools.ts. Binding this harness to a wide
+ * surface would make the gate break every time the port progresses, which is
+ * precisely backwards — the gate should break when RESULTS change.
  *
- * `search()` is what `tools.ts::recall` calls, so this is green's real path and
- * not a test-only shortcut.
+ * The primary record comes from `recallWithExpansion`, because BLUE's records
+ * come from `recall()` and blue's recall runs the multi-stage expansion below
+ * expansion_threshold. Comparing blue's recall() against green's bare `search()`
+ * compares two different questions, and reports every sparse query as a
+ * permanent gap that no amount of porting could ever close. `search()` remains
+ * expansion-free on purpose — the SQL-level parity claim depends on it — so it
+ * is the wrong layer to diff against blue, not the wrong function.
  *
  * ------------------------------------------------------------------ TRANSLATION
  *
@@ -54,6 +58,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, search, buildSearch } from "../src/turso.ts";
+import { recallWithExpansion } from "../src/expansion.ts";
 import { recall as toolRecall } from "../src/tools.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,7 +268,13 @@ async function main() {
       };
     } else {
       try {
-        const rows = await search(client, String(queryText), opts);
+        // recallWithExpansion, NOT search(). Blue's records come from recall(),
+        // which runs the multi-stage expansion whenever a query returns fewer
+        // than expansion_threshold rows — so comparing against bare search()
+        // compares two different questions and reports every sparse query as a
+        // permanent gap. search() stays expansion-free by design (the SQL-level
+        // parity claim depends on it); the LIKE-FOR-LIKE path is this one.
+        const rows = await recallWithExpansion(client, String(queryText), opts);
         // `scores` is parallel to `ids` — same length, same order — and kept as
         // a separate array on purpose, so nothing that already reads `.ids`
         // has to change. The sequence comparison is the gate; this is evidence
