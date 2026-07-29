@@ -14,35 +14,86 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { recall, memoryGet, muninnConfig, errorText, defaultDeps, type Config, type Deps } from "./tools.ts";
+import { defaultRegistry, pointerFor, registerDocLayer, type DocRegistry } from "./resources.ts";
 
 export const SERVER_NAME = "muninn";
 export const SERVER_VERSION = "0.1.0";
 
-export function buildServer(config: Config, deps: Deps = defaultDeps): McpServer {
+/**
+ * @param registry the progressive-disclosure registry. Injectable so tests can
+ *   drive synthetic topics through the real registration path — `docs-generated.ts`
+ *   is a build artefact and its contents must not be a test fixture.
+ */
+export function buildServer(
+  config: Config,
+  deps: Deps = defaultDeps,
+  registry: DocRegistry = defaultRegistry,
+): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
-      capabilities: { tools: {} },
+      capabilities: {
+        // The SDK defaults an unset `listChanged` to TRUE when it installs the
+        // handlers, so `{}` is not the modest declaration it reads as — it ships
+        // a promise to emit `notifications/*/list_changed`, which this server
+        // never sends. Both are written out as false: it is what the spec says
+        // omission means, and an unhonoured capability is worse than an
+        // unclaimed one. `subscribe` is simply absent.
+        //
+        // Our tool list changes only on deploy, which by definition a live
+        // client is not around to be notified about — so `tools/list` carries a
+        // public cache hint below and no change notification, and those two
+        // facts are the same fact.
+        tools: { listChanged: false },
+        resources: { listChanged: false },
+      },
       instructions:
         "Muninn's persistent memory. `recall` searches stored memories by text " +
         "and tags, ranked by relevance, recency, priority and confidence; " +
         "`memory_get` fetches one memory by id and walks its references; " +
-        "`muninn_config` reads the profile/ops/journal config store. This " +
-        "deployment is READ-ONLY: writes still go through the Python skill.",
-      // The tool list is identical for every caller and changes only on deploy.
-      // Nothing else may be public: recall results are one user's private memory
-      // and must never be served from a shared cache.
-      cacheHints: { "tools/list": { ttlMs: 300_000, cacheScope: "public" } },
+        "`muninn_config` reads the profile/ops/journal config store; " +
+        "`muninn_docs` (and the `muninn://` resources) hold the full reference " +
+        "for all three. This deployment is READ-ONLY: writes still go through " +
+        "the Python skill.",
+      // CACHE SCOPE IS A PRIVACY BOUNDARY. Public is for results that are
+      // byte-identical for every caller and change only on deploy: the tool
+      // list, and the documentation listings backed by `docs-generated.ts`.
+      // Nothing derived from the memory corpus may be public — recall results
+      // are one user's private memory and must never be served from a shared
+      // cache. See PUBLIC_DOC_CACHE_HINT in resources.ts for what would flip
+      // these listings back to private.
+      //
+      // `resources/read` is deliberately NOT hinted here. Its scope is set per
+      // resource, so that forgetting a hint on a future memory-derived resource
+      // fails closed to the SDK's conservative `private` default rather than
+      // inheriting a blanket `public` from this line.
+      cacheHints: {
+        "tools/list": { ttlMs: 300_000, cacheScope: "public" },
+        "resources/list": { ttlMs: 300_000, cacheScope: "public" },
+        "resources/templates/list": { ttlMs: 300_000, cacheScope: "public" },
+      },
     },
   );
+
+  // Layer 1 (§8): the `muninn://` resources, and the `muninn_docs` tool that
+  // serves the same rows to clients that do not read resources. The fourth tool
+  // is a deliberate spend against §2's budget — §9 decision 14: it is a
+  // three-line schema and it is what makes the design surface-independent.
+  registerDocLayer(server, registry);
 
   server.registerTool(
     "recall",
     {
       title: "Recall memories",
+      // THE HOT PATH IS THINNED, NOT DISPATCHED. §8 caveat 1: PD trades a fixed
+      // cost for a variable cost plus a round trip, which is a good trade when N
+      // is large and usage sparse — and a bad one here. `recall` is called in
+      // nearly every conversation, so making it require a resource read first
+      // would be a regression wearing PD's clothes. What moves behind the
+      // pointer is prose; the four arguments stay first-class and described.
       description:
-        "Search stored memories by text and/or tags. Use for 'what do I know about X', " +
-        "prior decisions, and past corrections.",
+        "Search stored memories by text and/or tags: what is known about X, prior " +
+        "decisions, past corrections. " + pointerFor(registry, ["recall"]),
       // Four first-class arguments, not nineteen. The rest of recall()'s surface
       // is documented in a resource rather than a schema (§8 progressive
       // disclosure); rendering all 19 as JSON Schema costs ~2k tokens per tool.
@@ -70,10 +121,14 @@ export function buildServer(config: Config, deps: Deps = defaultDeps): McpServer
     "memory_get",
     {
       title: "Get a memory by id",
+      // The per-mode gloss is gone: the enum values name themselves, and a
+      // caller who needs to know what a reference chain IS needs the reference
+      // doc, not two more words of schema. Ids stay, because "where do I get an
+      // id" is the one thing a caller cannot work out from the schema.
       description:
-        "Fetch one memory by id (full uuid or a unique prefix). mode: 'get' the " +
-        "memory itself, 'chain' its reference graph, 'alternatives' the options a " +
-        "decision rejected. Ids come from recall's [bracketed] prefixes.",
+        "Fetch one memory by id, its reference chain, or the alternatives a decision " +
+        "rejected. Ids come from recall's [bracketed] prefixes. " +
+        pointerFor(registry, ["memory", "types"]),
       // One tool, three modes. Three registrations would cost three descriptions
       // and three copies of `id` in every conversation (§2 tool budget); the
       // modes share an id, a resolver and an output shape, so they share a schema.
@@ -86,7 +141,7 @@ export function buildServer(config: Config, deps: Deps = defaultDeps): McpServer
         depth: z
           .number()
           .optional()
-          .describe("Chain traversal depth (default 3, capped at 10). mode='chain' only."),
+          .describe("Chain depth (default 3, max 10). mode='chain' only."),
       }),
       annotations: { readOnlyHint: true },
     },
@@ -106,17 +161,24 @@ export function buildServer(config: Config, deps: Deps = defaultDeps): McpServer
     "muninn_config",
     {
       title: "Read Muninn config",
+      // What each category MEANS, and why there is no config_set, are deferred:
+      // `readOnlyHint` and the server instructions already say read-only, and
+      // the category glosses are reference material by definition.
       description:
-        "Read the config store — profile (identity), ops (operating rules), journal " +
-        "(session summaries). op 'get' returns one value by key; 'list' indexes keys " +
-        "without their values. Read-only: there is no config_set here.",
+        "Read the config store — profile, ops, journal. op 'get' returns one key's " +
+        "value; 'list' indexes the keys without their values. " +
+        // No config-specific doc is generated today; `vocabulary` is the one
+        // that documents the config categories, so it is where a caller who
+        // needs more than this description should be sent. `config` leads in
+        // case the generator grows a dedicated topic later.
+        pointerFor(registry, ["config", "vocabulary"]),
       inputSchema: z.object({
         op: z.enum(["get", "list"]).optional().describe("Default 'get'."),
         key: z.string().optional().describe("Config key. Required when op='get'."),
         category: z
           .string()
           .optional()
-          .describe("Filter a list to 'profile', 'ops' or 'journal'. op='list' only."),
+          .describe("Filter to one category. op='list' only."),
       }),
       annotations: { readOnlyHint: true },
     },

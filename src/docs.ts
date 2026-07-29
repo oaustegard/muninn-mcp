@@ -91,10 +91,22 @@ export const UTILITY_URI_PREFIX = "muninn://utilities/";
 /**
  * Every fixed-URI topic: the reference set plus the utility index.
  *
- * Per-utility docs are deliberately NOT here. There are ~17 of them and they are
- * addressed by a URI template, so listing them individually would put 17 rows in
- * every `resources/list` — re-inflating the budget this layer exists to protect,
- * one level down.
+ * Per-utility docs are not here — they are addressed by a URI template and
+ * enumerated by its `list` callback instead, so `resources/list` answers with
+ * all 21 rows (4 fixed + 17 utilities) while this function returns 4.
+ *
+ * An earlier version of this comment claimed the split kept those 17 rows OUT of
+ * `resources/list`, to protect the budget. That was over-cautious, and it was
+ * also not what shipped. The budget §8 is defending is what enters context
+ * *unbidden*: `tools/list` is re-sent in every conversation, which is why tool
+ * schemas are rationed. `resources/list` is fetched when someone goes looking.
+ * Paying 17 rows once, on demand, to make the utilities discoverable is the
+ * right side of §8 caveat 3 — a resource nobody can find is dead weight, and
+ * `resources/templates/list` alone tells you the shape of a URI without telling
+ * you which names are valid.
+ *
+ * What this split does buy is that the 17 never reach a tool schema. That was
+ * always the load-bearing half.
  */
 export function allDocs(): DocTopic[] {
   return [...REFERENCE_DOCS, UTILITY_INDEX];
@@ -153,9 +165,19 @@ export function utilityDoc(name: string): DocTopic | undefined {
  * and that sentence is the single piece of schema text that cannot be
  * economised. Forgetting it is the classic PD failure: immaculate deferred
  * documentation that never gets loaded.
+ *
+ * Returns `undefined` for a topic the loaded registry does not serve, rather
+ * than synthesising `muninn://reference/<topic>` and hoping. An earlier version
+ * did synthesise, and it would have shipped `muninn_config` pointing at a dead
+ * `muninn://reference/boot`: the `muninn_docs` door degrades to a list of real
+ * topics, but `resources/read` on that URI is just -32602. **No pointer is
+ * better than a dead pointer** — the tool still works, it simply offers no
+ * deferred reference. A caller that wants a fallback should pick among
+ * candidates that exist (see `pointerFor` in resources.ts) rather than invent
+ * one here.
  */
-export function pointerTo(topic: string): string {
+export function pointerTo(topic: string): string | undefined {
   const doc = docByTopic(topic);
-  const uri = doc ? doc.uri : `${URI_SCHEME}reference/${topic}`;
-  return `Full reference: ${uri} (or muninn_docs topic="${topic}").`;
+  if (!doc) return undefined;
+  return `Full reference: ${doc.uri} (or muninn_docs topic="${topic}").`;
 }
