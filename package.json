@@ -8,20 +8,22 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "build:docs": "node scripts/build-docs.mjs",
-    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/tools.test.ts && node --experimental-strip-types src/resources.test.ts",
+    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/expansion.test.ts && node --experimental-strip-types src/tools.test.ts && node --experimental-strip-types src/resources.test.ts && node --experimental-strip-types src/boot.test.ts && node --experimental-strip-types src/mcp-oauth.test.ts",
     "harness": "npm run harness:blue && npm run harness:green && npm run harness:diff",
     "harness:blue": "python3 harness/blue.py",
     "harness:green": "node --experimental-strip-types harness/green.mjs",
     "harness:diff": "node harness/diff.mjs",
-    "harness:fts": "python3 harness/regen-fts-vectors.py"
+    "harness:fts": "python3 harness/regen-fts-vectors.py",
+    "harness:selftest": "node harness/diff.mjs --self-test"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.8.2",
     "@libsql/client": "^0.14.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240000.0",
-    "wrangler": "^3.80.0"
+    "@cloudflare/workers-types": "^5.20260729.1",
+    "wrangler": "^4.115.0"
   }
 }

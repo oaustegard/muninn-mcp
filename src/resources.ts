@@ -38,6 +38,17 @@ import {
   utilityNames,
   type DocTopic,
 } from "./docs.ts";
+import { composeBoot, defaultBootDeps, type BootDeps } from "./boot.ts";
+import type { Config } from "./tools.ts";
+
+/**
+ * The one resource here that is not documentation.
+ *
+ * Kept next to the doc registry because it is registered through the same
+ * `resources/*` surface, but it shares none of the doc layer's properties — see
+ * `PRIVATE_BOOT_CACHE_HINT`.
+ */
+export const BOOT_URI = "muninn://boot";
 
 /**
  * The slice of `docs.ts` this module needs, named so tests can substitute it.
@@ -90,6 +101,26 @@ export const UTILITY_URI_TEMPLATE = `${UTILITY_URI_PREFIX}{name}`;
 export const PUBLIC_DOC_CACHE_HINT: { ttlMs: number; cacheScope: "public" | "private" } = {
   ttlMs: 300_000,
   cacheScope: "public",
+};
+
+/**
+ * The other side of that decision, and the first resource to need it.
+ *
+ * `muninn://boot` is the composed boot payload: this user's profile, their
+ * operating rules, their pending tasks, the age of their last session. It is
+ * about as private as anything this server can emit, so it may never be served
+ * from a shared cache — the comment above said the first corpus-dependent
+ * resource would be `private`, and this is it.
+ *
+ * The TTL is short rather than absent because the payload is genuinely expensive
+ * to compose (several queries, ~100KB of text) and genuinely stable across the
+ * seconds around a boot; 60s lets a client that reads the resource and then
+ * calls the tool avoid paying twice, without holding a stale view of memory that
+ * the same session may be actively writing through blue.
+ */
+export const PRIVATE_BOOT_CACHE_HINT: { ttlMs: number; cacheScope: "public" | "private" } = {
+  ttlMs: 60_000,
+  cacheScope: "private",
 };
 
 /**
@@ -161,6 +192,42 @@ export function pointerFor(registry: DocRegistry, candidates: string[]): string 
  * rather than a URI. Per-utility docs are NOT registered individually — that is
  * `docs.ts`'s deliberate choice, and the template below is what it buys.
  */
+/**
+ * Register `muninn://boot` — the composed boot payload, as a resource.
+ *
+ * §9 item 6 asked whether boot belongs as a tool or a resource and §8 resolved
+ * it as **both**: a client that attaches resources can read it, and a client
+ * that does not can call the tool, so boot never depends on client resource
+ * behaviour. The tool is what project instructions invoke, which is the half
+ * that must not be optional.
+ *
+ * Separate from `registerResources` because it needs Turso, while the doc layer
+ * is static content — keeping them apart is what lets the doc tests run with a
+ * `Deps` stub that throws on any database access.
+ */
+export function registerBootResource(
+  server: McpServer,
+  config: Config,
+  deps: BootDeps = defaultBootDeps,
+): void {
+  server.registerResource(
+    "boot",
+    BOOT_URI,
+    {
+      title: "Boot payload",
+      description:
+        "Identity, operating rules, pending tasks and recent context — the " +
+        "composed payload a session loads at start.",
+      mimeType: "text/markdown",
+      // PRIVATE. This is one user's memory, not documentation.
+      cacheHint: PRIVATE_BOOT_CACHE_HINT,
+    },
+    async () => ({
+      contents: [{ uri: BOOT_URI, mimeType: "text/markdown", text: await composeBoot(config, deps) }],
+    }),
+  );
+}
+
 export function registerResources(server: McpServer, registry: DocRegistry = defaultRegistry): void {
   for (const doc of registry.allDocs()) {
     server.registerResource(

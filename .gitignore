@@ -8,3 +8,7 @@ dist/
 # needed them. Ignored so they cannot ride along in an unrelated commit.
 *.scratch.ts
 *.scratch.mjs
+
+# Python bytecode from harness/*.py runs.
+__pycache__/
+*.pyc

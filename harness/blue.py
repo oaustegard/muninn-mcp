@@ -15,23 +15,48 @@ are missing, 1 if the query set itself is unreadable.
 --------------------------------------------------------------------- WHAT WE
 --------------------------------------------------------------------- COMPARE
 
-We record ID ORDER AND NOTHING ELSE. Not row contents, not scores.
+We record ID ORDER, and — since the near-tie fix — THE COMPOSITE SCORE THAT
+PRODUCED IT. Nothing else. No row contents.
 
 Row contents are not comparable, because two of the columns are written BY THE
 ACT OF READING: `access_count` and `last_accessed` are bumped on every recall.
 A row-level diff of two captures taken minutes apart would fail on every row for
 reasons that have nothing to do with the port.
 
-Scores are not comparable either, though for a subtler reason: composite_score
-contains `julianday('now')`. It is evaluated server-side at query time, so blue
-and green get different values for the same row simply by running at different
-instants. The RANKING is stable under that (the recency factor is monotone in
-`t` and applies uniformly), which is exactly why order is the right invariant
-and score is not.
-
+Order IS the assertion — docs/mcp-migration.md §5 asks for "identical id-order
+on ranked recalls", and a set comparison would pass a fully-inverted ranking.
 So: ids, in order. Nothing sorted, nothing truncated, nothing deduplicated.
-Order IS the signal — docs/mcp-migration.md §5 asks for "identical id-order on
-ranked recalls", and a set comparison would pass a fully-inverted ranking.
+
+--------------------------------------------------------------------- WHY THE
+--------------------------------------------------------------------- SCORES
+
+`composite_score` is NOT an assertion. It is EVIDENCE ABOUT THE ASSERTION, and
+it is recorded for exactly one purpose: to let `diff.mjs` tell a near-tie
+reordering apart from a ranking regression.
+
+The score contains `julianday('now')`. It is evaluated server-side at query
+time, so blue and green get different values for the same row simply by running
+at different instants — and, crucially, rows of DIFFERENT AGES DRIFT AT
+DIFFERENT RATES, because the recency factor is
+`1.0 / (1.0 + (julianday('now') - julianday(m.t)) * 0.01)`. Two rows whose
+scores differ in the sixth decimal place can therefore cross over between
+blue's capture and green's — or between two runs of the same side.
+
+An earlier version of this file argued that "the RANKING is stable under that
+(the recency factor is monotone in `t` and applies uniformly)". That is wrong,
+and the harness caught it: the factor is monotone in `t`, but its DERIVATIVE
+with respect to wall-clock time is not uniform across rows, so the induced
+order is not stable. Ids alone cannot distinguish "these two rows are a
+0.0004%-apart tie that drifted" from "green's ranking expression is wrong".
+The score can. See the epsilon derivation in `diff.mjs`.
+
+NOT EVERY ROW HAS ONE. `composite_score` is computed only on the FTS5 path
+(`turso.py::_fts5_search`). Blue's other path — `memory.py::_query`, reached by
+`strict=True`, `fetch_all=True`, or any falsy `search` — is a plain
+`SELECT * FROM memories ... ORDER BY t DESC` with no ranking expression at all,
+so those rows carry NO score and we record `null`. That is not a gap to paper
+over: those queries are not ranked by composite, so composite gaps could not
+explain a reordering in them anyway, and `diff.mjs` refuses to call them ties.
 
 ------------------------------------------------------------------- SIDE
 ------------------------------------------------------------------- EFFECTS
@@ -140,6 +165,28 @@ def die(code, msg):
     sys.exit(code)
 
 
+def score_of(row):
+    """Pull `composite_score` off a raw row, or None if this path has none.
+
+    Deliberately total: it never raises and never invents a value. A missing or
+    unparseable score becomes None, and `diff.mjs` treats a None anywhere in a
+    record as "this record cannot be tie-analysed" rather than as a zero. A
+    fabricated 0.0 here would be worse than useless — 0.0 sits in the middle of
+    the real range (composite is NEGATIVE, because bm25() is), so it would look
+    like a plausible score and could silently license a bogus TIE verdict.
+
+    Rows from `_fts5_search` always have it. Rows from `_query` never do; see
+    the module docstring.
+    """
+    v = row.get("composite_score")
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def one_line(s, limit=400):
     """Errors are compared and printed inline, so flatten them.
 
@@ -221,18 +268,30 @@ def main():
             # sort, do not dedupe — blue's expansion merge CAN in principle
             # surface the same id twice and we want to see that if it happens.
             ids = [str(r["id"]) for r in rows]
-            rec = {"id": q["id"], "ids": ids, "count": len(ids), "error": None}
+            # Parallel to `ids`, same length, same order. Kept as a SEPARATE
+            # array rather than a list of {id, score} objects so that every
+            # existing consumer of `.ids` keeps working untouched — the gate's
+            # sequence comparison is the load-bearing part and this change must
+            # not be able to break it.
+            scores = [score_of(r) for r in rows]
+            rec = {"id": q["id"], "ids": ids, "scores": scores,
+                   "count": len(ids), "error": None}
         except Exception as e:
             # Refusals are part of the contract: recall("*") raises ValueError on
             # purpose. `ids: null` distinguishes "refused" from "returned zero".
-            rec = {"id": q["id"], "ids": None, "count": 0,
+            rec = {"id": q["id"], "ids": None, "scores": None, "count": 0,
                    "error": f"{type(e).__name__}: {one_line(e)}"}
         rec["ms"] = int((time.time() - t0) * 1000)
         records.append(rec)
 
         mark = "ERR " if rec["error"] else "    "
+        # "no-score" is worth surfacing at capture time, not just in the diff:
+        # it is the visible signature of blue having taken the non-FTS _query
+        # path for this entry, which is itself a fact about the query shape.
+        noscore = "" if rec["ids"] is None or not rec["ids"] or all(
+            s is not None for s in rec["scores"]) else "  [no composite_score — non-FTS _query path]"
         print(f"{mark}{q['id']:<28} n={rec['count']:<4} {rec['ms']:>5}ms"
-              + (f"  {rec['error'][:80]}" if rec["error"] else ""))
+              + (f"  {rec['error'][:80]}" if rec["error"] else "") + noscore)
 
     snapshot = {
         "side": "blue",
@@ -251,8 +310,13 @@ def main():
                    encoding="utf-8")
 
     errs = sum(1 for r in records if r["error"])
+    unscored = sum(1 for r in records
+                   if r["ids"] and any(s is None for s in r["scores"]))
     print(f"\nwrote {OUT}")
     print(f"{len(records)} captured, {errs} errored, {snapshot['elapsed_s']}s")
+    if unscored:
+        print(f"{unscored} record(s) carry no composite_score (blue's non-FTS "
+              f"_query path); diff.mjs will not tie-analyse those.")
     if track:
         print(f"suppressed {track['n']} access_count bumps "
               f"(set MUNINN_HARNESS_TRACK_ACCESS=1 to allow them)")

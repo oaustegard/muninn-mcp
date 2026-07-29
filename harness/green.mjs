@@ -23,14 +23,18 @@
  *
  * ------------------------------------------------------------- IMPORT SURFACE
  *
- * We import ONLY `db` and `search` from turso.ts, plus `recall` from tools.ts.
- * src/turso.ts is under concurrent development (withRetry, normalizeUrl,
- * escapeLike, cooccurrenceExpand are all landing). Binding this harness to a
- * wide surface would make the gate break every time the port progresses, which
- * is precisely backwards — the gate should break when RESULTS change.
+ * We import `db`/`search`/`buildSearch` from turso.ts, `recallWithExpansion`
+ * from expansion.ts, and `recall` from tools.ts. Binding this harness to a wide
+ * surface would make the gate break every time the port progresses, which is
+ * precisely backwards — the gate should break when RESULTS change.
  *
- * `search()` is what `tools.ts::recall` calls, so this is green's real path and
- * not a test-only shortcut.
+ * The primary record comes from `recallWithExpansion`, because BLUE's records
+ * come from `recall()` and blue's recall runs the multi-stage expansion below
+ * expansion_threshold. Comparing blue's recall() against green's bare `search()`
+ * compares two different questions, and reports every sparse query as a
+ * permanent gap that no amount of porting could ever close. `search()` remains
+ * expansion-free on purpose — the SQL-level parity claim depends on it — so it
+ * is the wrong layer to diff against blue, not the wrong function.
  *
  * ------------------------------------------------------------------ TRANSLATION
  *
@@ -54,6 +58,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, search, buildSearch } from "../src/turso.ts";
+import { recallWithExpansion } from "../src/expansion.ts";
 import { recall as toolRecall } from "../src/tools.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +78,33 @@ function die(code, msg) {
 
 function oneLine(s, limit = 400) {
   return String(s).replace(/\s+/g, " ").slice(0, limit);
+}
+
+/**
+ * Pull `composite_score` off a green row, or null if it is not a real number.
+ *
+ * Recorded for one reason only: `diff.mjs` needs it to tell a NEAR-TIE
+ * REORDERING apart from a ranking regression. The composite contains
+ * `julianday('now')`, and rows of different ages drift at different rates, so
+ * two rows whose scores agree to five decimal places can swap places between
+ * blue's capture and green's without either side being wrong. Ids alone cannot
+ * distinguish that from green ranking incorrectly. See the epsilon derivation
+ * in diff.mjs.
+ *
+ * The score is NOT compared across sides — it cannot be, it is a function of
+ * wall-clock time. Only the WITHIN-SIDE gap between two rows is used.
+ *
+ * Total by construction: never throws, never invents a number. libsql returns
+ * SQLite REAL as a JS number, but a null column, a bigint, or a driver change
+ * would all land here, and a fabricated 0 would be actively dangerous — the
+ * composite is negative (bm25() is), so 0 looks like a plausible score and
+ * could license a bogus TIE. null makes diff.mjs refuse to tie-analyse instead.
+ */
+function scoreOf(row) {
+  const v = row?.composite_score;
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "bigint" ? Number(v) : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -128,16 +160,20 @@ function translate(args) {
     notes.push("tags_any translated to tags+tagMode:any (green has no such sugar)");
   }
 
-  // NOT unsupported, but not honoured either: green performs no expansion, so
-  // the threshold has nothing to gate. expansion_threshold=0 is the one value
-  // where green's behaviour coincides with blue's, which is why the control
-  // entries in queries.json set exactly that.
+  // MAPPED. This branch used to only leave a note, on the reasoning that "green
+  // performs no expansion, so the threshold has nothing to gate". That stopped
+  // being true when src/expansion.ts landed, and the stale branch made green
+  // expand while blue was told not to — which the `-control` probes in
+  // queries.json caught immediately: blue 2 rows, green 10.
+  //
+  // Worth keeping as a scar. A translation layer that silently ignores an
+  // argument does not fail loudly; it runs a DIFFERENT query and reports the
+  // disagreement as a divergence in the code under test. The controls exist
+  // precisely so that "the probe stopped exercising expansion" and "green
+  // stopped honouring the threshold" cannot look alike.
   if (args.expansion_threshold !== undefined) {
-    notes.push(
-      args.expansion_threshold === 0
-        ? "expansion_threshold=0 — blue's expansion is OFF, so this shape is comparable"
-        : `expansion_threshold=${args.expansion_threshold} ignored; green has no expansion stage`,
-    );
+    opts.expansionThreshold = args.expansion_threshold;
+    notes.push(`expansion_threshold=${args.expansion_threshold} mapped to expansionThreshold`);
   }
 
   // UNSUPPORTED: whole retrieval modes green does not implement.
@@ -230,15 +266,32 @@ async function main() {
       rec = {
         id: q.id,
         ids: null,
+        scores: null,
         count: 0,
         error: `unsupported-in-green: ${unsupported.join("; ")}`,
       };
     } else {
       try {
-        const rows = await search(client, String(queryText), opts);
-        rec = { id: q.id, ids: rows.map((r) => String(r.id)), count: rows.length, error: null };
+        // recallWithExpansion, NOT search(). Blue's records come from recall(),
+        // which runs the multi-stage expansion whenever a query returns fewer
+        // than expansion_threshold rows — so comparing against bare search()
+        // compares two different questions and reports every sparse query as a
+        // permanent gap. search() stays expansion-free by design (the SQL-level
+        // parity claim depends on it); the LIKE-FOR-LIKE path is this one.
+        const rows = await recallWithExpansion(client, String(queryText), opts);
+        // `scores` is parallel to `ids` — same length, same order — and kept as
+        // a separate array on purpose, so nothing that already reads `.ids`
+        // has to change. The sequence comparison is the gate; this is evidence
+        // hung beside it, not a new assertion.
+        rec = {
+          id: q.id,
+          ids: rows.map((r) => String(r.id)),
+          scores: rows.map(scoreOf),
+          count: rows.length,
+          error: null,
+        };
       } catch (e) {
-        rec = { id: q.id, ids: null, count: 0, error: `${e?.name ?? "Error"}: ${oneLine(e?.message ?? e)}` };
+        rec = { id: q.id, ids: null, scores: null, count: 0, error: `${e?.name ?? "Error"}: ${oneLine(e?.message ?? e)}` };
       }
     }
     rec.ms = Date.now() - t0;
@@ -271,9 +324,16 @@ async function main() {
 
     records.push(rec);
     const mark = rec.error ? "ERR " : "    ";
+    // Green has only the FTS path, which always SELECTs composite_score, so a
+    // null here is not an expected shape the way it is on blue — it means the
+    // driver or the SELECT changed, and the gate quietly lost its ability to
+    // recognise near-ties. Say so loudly at capture time.
+    const noScore = rec.ids?.length && rec.scores.some((s) => s === null)
+      ? "  !! some rows have no composite_score — green's SELECT should always compute one"
+      : "";
     console.log(
       `${mark}${q.id.padEnd(28)} n=${String(rec.count).padEnd(4)} ${String(rec.ms).padStart(5)}ms` +
-        (rec.error ? `  ${rec.error.slice(0, 80)}` : ""),
+        (rec.error ? `  ${rec.error.slice(0, 80)}` : "") + noScore,
     );
   }
 

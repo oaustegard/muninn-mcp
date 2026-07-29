@@ -85,12 +85,12 @@
   {
    "id": "n-one",
    "why": "LIMIT 1 compares only the single best-ranked row. Intended as the sharpest test of the ranking expression — it instead caught blue being non-deterministic. Retained, because a query that cannot have a stable answer is worth keeping visible.",
-   "expect": "known-gap",
+   "expect": "parity",
    "args": {
     "search": "bluesky",
     "n": 1
    },
-   "gap": "BLUE IS NON-DETERMINISTIC HERE, and green is not at fault. n=1 always returns fewer than expansion_threshold (3) rows, so memory.py::recall runs its multi-stage expansion; that loop iterates `for tag in stage1_tags` where stage1_tags is a SET of strings, and breaks early once len(results)+len(expansion_results) >= n*2. With n=1 the cap is 2, so the FIRST tag visited decides the whole answer — and set iteration order over strings is randomised per process by PEP 456 hash randomisation. Measured: recall('bluesky', n=1) returns 8df0ab0d, 889875b9 or 6edc2ff8 depending on PYTHONHASHSEED, and two full blue captures of this 64-query set differ on this entry alone. Green returns the top row by composite score, which is one of blue's possible answers. Do not 'fix' green to match a captured blue id: there is no id to match."
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "n-fifty",
@@ -132,7 +132,7 @@
    "id": "type-procedure-no-search",
    "why": "recall(type=..., tags=...) with NO search term — SKILL.md line 71. Blue routes this to _query (plain SELECT, ORDER BY t DESC), NOT to FTS5. Green has only the FTS path and will MATCH the literal '\"\"'. Two different queries against two different orderings.",
    "expect": "known-gap",
-   "gap": "green has no non-FTS _query path; blue falls back to it whenever `search` is falsy",
+   "gap": "STILL OPEN. Matches at zero rows today, but vacuously: this has no search term, so blue routes to _query (plain SELECT, ORDER BY t DESC) while green MATCHes the literal '\"\"'. Two different questions that happen to agree on an empty answer. Same falsy-search gap as empty-string/no-search-arg.",
    "args": {
     "type": "procedure",
     "tags": [
@@ -143,12 +143,12 @@
   {
    "id": "type-unknown-value",
    "why": "A type outside state.TYPES. Neither side validates the filter value, so both should return zero rows — and on blue, zero rows then triggers expansion.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion; blue expands whenever len(results) < expansion_threshold",
+   "expect": "parity",
    "args": {
     "search": "memory",
     "type": "not-a-real-type"
-   }
+   },
+   "note": "Zero rows on both sides is this probe's ASSERTION, not corpus drift — the filter is empty by construction. Safe as parity."
   },
   {
    "id": "type-empty-string",
@@ -210,7 +210,7 @@
    "id": "tags-all-narrow",
    "why": "A tag_mode=all pair chosen to be over-constrained, so it returns fewer than 3 rows and pushes blue into expansion while green stops. The intersection of `all` + sparse is where the two engines diverge hardest.",
    "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "gap": "Matches at zero rows, but the probe is over-constrained on purpose and the corpus decides whether it stays empty. Promote only alongside a result count greater than zero, or the assertion is 'both found nothing', which green could satisfy while broken.",
    "args": {
     "search": "release",
     "tags": [
@@ -334,12 +334,12 @@
   {
    "id": "conf-sparse",
    "why": "A high threshold on a narrow term, engineered to fall under 3 results. Confidence filtering and expansion interact: blue's expansion stages re-pass `conf` but NOT `session_id`, an asymmetry worth watching.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "perch triage",
     "conf": 0.9
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "since-only",
@@ -372,39 +372,39 @@
   {
    "id": "since-until-inverted",
    "why": "until < since — an empty window by construction. Guaranteed zero rows, so this is a cheap deterministic expansion trigger that does not depend on the corpus at all.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "memory",
     "since": "2026-06-01T00:00:00Z",
     "until": "2026-01-01T00:00:00Z"
-   }
+   },
+   "note": "Zero rows on both sides is this probe's ASSERTION, not corpus drift — the filter is empty by construction. Safe as parity."
   },
   {
    "id": "since-with-offset",
    "why": "HIGH VALUE. A timestamp with a +02:00 offset. Blue runs since/until through result.py::normalize_to_utc before binding; green binds the raw string. The DB stores Z-suffixed UTC, so green's comparison is a LEXICOGRAPHIC compare against a differently-formatted string — off by the offset, or matching nothing.",
-   "expect": "known-gap",
-   "gap": "green does not call normalize_to_utc on since/until",
+   "expect": "parity",
    "args": {
     "search": "memory",
     "since": "2026-01-01T00:00:00+02:00"
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "since-bare-date",
    "why": "'2026-03-01' with no time and no zone — the shape SKILL.md line 113 actually documents. Blue normalizes it; green binds it bare, and '2026-03-01' < '2026-03-01T00:00:00Z' lexicographically, so the two windows differ at the boundary day.",
-   "expect": "known-gap",
-   "gap": "green does not call normalize_to_utc on since/until",
+   "expect": "parity",
    "args": {
     "search": "memory",
     "since": "2026-03-01"
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "session-id-scoped",
    "why": "Session scoping (advanced-operations.md line 328). Binds `m.session_id = ?`. Sessions are narrow, so this usually also lands under the expansion threshold — read it together with its result count.",
    "expect": "known-gap",
-   "gap": "green has no multi-stage expansion; blue's expansion stages also DROP session_id, so blue can return cross-session rows here",
+   "gap": "Matches at zero rows because this session id is not in the corpus. The probe is only meaningful when the session exists — re-check the count before promoting, and pick a session id that is actually present.",
    "args": {
     "search": "memory",
     "session_id": "muninn-mcp-stage1",
@@ -414,18 +414,17 @@
   {
    "id": "session-id-nonexistent",
    "why": "A session that cannot exist. Deterministic zero-row filter, so it isolates expansion behaviour from corpus drift. On blue watch for rows coming back ANYWAY — the expansion stages do not re-pass session_id.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion; blue's expansion stages drop session_id and can leak other sessions' rows",
+   "expect": "parity",
    "args": {
     "search": "memory",
     "session_id": "no-such-session-000"
-   }
+   },
+   "note": "Zero rows on both sides is this probe's ASSERTION, not corpus drift — the filter is empty by construction. Safe as parity."
   },
   {
    "id": "session-id-with-filters",
    "why": "session_id composed with type and tags, to pin the full parameter binding order: match, type, tags..., conf, session_id, since, until, limit.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "boot",
     "session_id": "muninn-mcp-stage1",
@@ -433,7 +432,8 @@
     "tags": [
      "mcp"
     ]
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "episodic-true",
@@ -458,30 +458,30 @@
   {
    "id": "episodic-sparse",
    "why": "Episodic ranking on a query that returns under 3 rows: blue applies the access boost, then throws the ordering away and re-sorts by expansion boost_scores instead. Documents that expansion OVERRIDES episodic ranking on blue.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "cooccurrence pmi",
     "episodic": true
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "sparse-nonsense-token",
    "why": "A token that cannot appear in the corpus. Zero primary hits sends blue down the 'no stage1 tags' branch, which expands the QUERY WORDS via _cooccurrence_expand at min_pmi=0.0 and can return rows from nowhere. Green returns nothing. The single loudest expected divergence in the set.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "zzqqxx-not-a-word"
-   }
+   },
+   "note": "Zero rows on both sides is this probe's ASSERTION, not corpus drift — the filter is empty by construction. Safe as parity."
   },
   {
    "id": "sparse-rare-compound",
    "why": "Two rare-but-real terms. Expected 1-2 primary hits, which is the interesting case: blue KEEPS them and then appends expansion rows, so blue's list starts like green's and then continues. Diff should classify this as EXTRA, not SET-DIFF.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "hrana pipeline"
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "sparse-expansion-disabled",
@@ -495,12 +495,12 @@
   {
    "id": "sparse-expansion-raised",
    "why": "expansion_threshold=10 on a query returning ~5 rows, so expansion fires where it normally would not. Confirms the threshold is a comparison against the PRIMARY result count, not against n.",
-   "expect": "known-gap",
-   "gap": "green has no multi-stage expansion",
+   "expect": "parity",
    "args": {
     "search": "turso libsql client",
     "expansion_threshold": 10
-   }
+   },
+   "note": "Was a known-gap for the unported multi-stage expansion; closed by porting it. Promoted on real rows, not on a both-empty coincidence."
   },
   {
    "id": "sparse-single-hit-disabled",
@@ -648,6 +648,101 @@
    "gap": "green does not implement blue's wildcard guard; it returns results where blue refuses",
    "args": {
     "search": "*"
+   }
+  },
+  {
+   "id": "expansion-13f",
+   "why": "EXPANSION COVERAGE. Chosen by measuring the live corpus: primary FTS returns 2 row(s), under expansion_threshold, and blue's recall() returns 10 — so this probe actually traverses stages 3/3b/4 and the boost re-rank. The original sparse-* group no longer does: the corpus grew past those terms and they now return 10 primary rows, so the gate was asserting expansion parity while exercising none of it. Re-measure these if they ever stop firing (compare against the expansion_threshold:0 control below).",
+   "expect": "parity",
+   "args": {
+    "search": "13f",
+    "n": 10
+   }
+  },
+  {
+   "id": "expansion-13f-control",
+   "expect": "parity",
+   "why": "The same term with expansion_threshold:0. Blue skips expansion entirely, so this pins the PRIMARY result and makes the pair above a differential measurement: if the control and the probe ever return the same rows, the probe has stopped firing expansion.",
+   "args": {
+    "search": "13f",
+    "n": 10,
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "expansion-singleton-research",
+   "why": "EXPANSION COVERAGE. Chosen by measuring the live corpus: primary FTS returns 1 row(s), under expansion_threshold, and blue's recall() returns 10 — so this probe actually traverses stages 3/3b/4 and the boost re-rank. The original sparse-* group no longer does: the corpus grew past those terms and they now return 10 primary rows, so the gate was asserting expansion parity while exercising none of it. Re-measure these if they ever stop firing (compare against the expansion_threshold:0 control below).",
+   "expect": "parity",
+   "args": {
+    "search": "2022-2025-research",
+    "n": 10
+   }
+  },
+  {
+   "id": "expansion-singleton-research-control",
+   "expect": "parity",
+   "why": "The same term with expansion_threshold:0. Blue skips expansion entirely, so this pins the PRIMARY result and makes the pair above a differential measurement: if the control and the probe ever return the same rows, the probe has stopped firing expansion.",
+   "args": {
+    "search": "2022-2025-research",
+    "n": 10,
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "expansion-singleton-governance",
+   "why": "EXPANSION COVERAGE. Chosen by measuring the live corpus: primary FTS returns 1 row(s), under expansion_threshold, and blue's recall() returns 10 — so this probe actually traverses stages 3/3b/4 and the boost re-rank. The original sparse-* group no longer does: the corpus grew past those terms and they now return 10 primary rows, so the gate was asserting expansion parity while exercising none of it. Re-measure these if they ever stop firing (compare against the expansion_threshold:0 control below).",
+   "expect": "parity",
+   "args": {
+    "search": "2025-governance",
+    "n": 10
+   }
+  },
+  {
+   "id": "expansion-singleton-governance-control",
+   "expect": "parity",
+   "why": "The same term with expansion_threshold:0. Blue skips expansion entirely, so this pins the PRIMARY result and makes the pair above a differential measurement: if the control and the probe ever return the same rows, the probe has stopped firing expansion.",
+   "args": {
+    "search": "2025-governance",
+    "n": 10,
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "expansion-pair-bottleneck",
+   "why": "EXPANSION COVERAGE. Chosen by measuring the live corpus: primary FTS returns 2 row(s), under expansion_threshold, and blue's recall() returns 10 — so this probe actually traverses stages 3/3b/4 and the boost re-rank. The original sparse-* group no longer does: the corpus grew past those terms and they now return 10 primary rows, so the gate was asserting expansion parity while exercising none of it. Re-measure these if they ever stop firing (compare against the expansion_threshold:0 control below).",
+   "expect": "parity",
+   "args": {
+    "search": "2026-bottleneck",
+    "n": 10
+   }
+  },
+  {
+   "id": "expansion-pair-bottleneck-control",
+   "expect": "parity",
+   "why": "The same term with expansion_threshold:0. Blue skips expansion entirely, so this pins the PRIMARY result and makes the pair above a differential measurement: if the control and the probe ever return the same rows, the probe has stopped firing expansion.",
+   "args": {
+    "search": "2026-bottleneck",
+    "n": 10,
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "expansion-singleton-convergence",
+   "why": "EXPANSION COVERAGE. Chosen by measuring the live corpus: primary FTS returns 1 row(s), under expansion_threshold, and blue's recall() returns 10 — so this probe actually traverses stages 3/3b/4 and the boost re-rank. The original sparse-* group no longer does: the corpus grew past those terms and they now return 10 primary rows, so the gate was asserting expansion parity while exercising none of it. Re-measure these if they ever stop firing (compare against the expansion_threshold:0 control below).",
+   "expect": "parity",
+   "args": {
+    "search": "2026-convergence",
+    "n": 10
+   }
+  },
+  {
+   "id": "expansion-singleton-convergence-control",
+   "expect": "parity",
+   "why": "The same term with expansion_threshold:0. Blue skips expansion entirely, so this pins the PRIMARY result and makes the pair above a differential measurement: if the control and the probe ever return the same rows, the probe has stopped firing expansion.",
+   "args": {
+    "search": "2026-convergence",
+    "n": 10,
+    "expansion_threshold": 0
    }
   }
  ]

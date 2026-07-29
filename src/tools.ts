@@ -17,7 +17,8 @@
  */
 
 import type { Client } from "@libsql/client/web";
-import { db, search, type Config, type MemoryRow, type SearchOpts } from "./turso.ts";
+import { db, type Config, type MemoryRow, type SearchOpts } from "./turso.ts";
+import { recallWithExpansion } from "./expansion.ts";
 import {
   configGet,
   configList,
@@ -154,7 +155,26 @@ export interface RecallArgs {
   type?: string;
 }
 
-/** The one tool green currently serves. */
+/**
+ * The one tool green currently serves.
+ *
+ * Routed through `expansion.ts::recallWithExpansion`, not through
+ * `turso.ts::search` directly: blue's `memory.py::recall` does not stop at the
+ * FTS query. When it returns fewer than `expansion_threshold` (3) rows it
+ * re-searches on the tags of the hits and on their PMI co-occurrences, then
+ * re-ranks the union by provenance boost. Calling `search()` here made green
+ * return a strict subset in composite order wherever blue returned a
+ * boost-reranked union — the largest remaining blue/green divergence, and the
+ * one the harness's `sparse-*` probes exist to measure.
+ *
+ * `search()` itself stays expansion-free on purpose. The parity harness compares
+ * at BOTH layers, and an expanding `search()` would destroy the SQL-level
+ * comparison that makes the ranking claim in docs/mcp-migration.md §3 checkable.
+ *
+ * The threshold is not exposed on the tool surface, so blue's default of 3
+ * applies to every MCP call — which is also what a blue caller gets unless they
+ * pass `expansion_threshold` explicitly.
+ */
 export async function recall(
   config: Config,
   args: RecallArgs,
@@ -166,7 +186,7 @@ export async function recall(
     tags: args.tags,
     type: args.type,
   };
-  const rows = await search(client, String(args.query ?? ""), opts);
+  const rows = await recallWithExpansion(client, String(args.query ?? ""), opts);
   return formatRecall(rows);
 }
 

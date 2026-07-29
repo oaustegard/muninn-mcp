@@ -86,7 +86,17 @@ eq("recall formats through the same path", text.includes("[a7edfdb0]"), true);
 
 let captured: Record<string, unknown> = {};
 const capture: Deps = {
-  db: () => ({ execute: async (q: Record<string, unknown>) => { captured = q; return { rows: [] }; } }) as never,
+  // Capture the FTS SEARCH specifically, not "whatever ran last". `recall` now
+  // routes through expansion.ts, and this fake returns zero rows — which is a
+  // sparse result, so the expansion fires and issues `tag_cooccurrence` queries
+  // AFTER the search. Those end in the co-occurrence LIMIT (10), so the clamp
+  // assertions below would read the wrong statement's trailing param.
+  db: () => ({
+    execute: async (q: Record<string, unknown>) => {
+      if (typeof q !== "string" && String(q.sql).includes("memory_fts")) captured = q;
+      return { rows: [] };
+    },
+  }) as never,
 };
 await recall({ TURSO_URL: "x", TURSO_TOKEN: "y" }, { query: "z", n: 999 }, capture);
 eq("n is capped at 50", (captured.args as unknown[])[(captured.args as unknown[]).length - 1], 50);

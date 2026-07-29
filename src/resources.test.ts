@@ -33,6 +33,7 @@ import {
   type DocRegistry,
 } from "./resources.ts";
 import type { Deps } from "./tools.ts";
+import type { BootDeps } from "./boot.ts";
 
 let pass = 0, fail = 0;
 const eq = (n: string, g: unknown, w: unknown) =>
@@ -145,6 +146,41 @@ async function rpc(
   return JSON.parse(at >= 0 ? text.slice(at + 6) : text) as Rpc;
 }
 
+/** A boot stub that succeeds without Turso, so the cache hint is observable. */
+const BOOT_DEPS: BootDeps = {
+  db: () => ({ execute: async () => ({ rows: [] }) }) as never,
+  now: () => new Date("2026-07-29T00:00:00Z"),
+};
+
+/**
+ * As `rpc`, but with boot wired to a stub.
+ *
+ * Separate because the default `DEPS` client throws on every query — which is
+ * what proves the doc layer never touches Turso, and which boot legitimately
+ * cannot satisfy.
+ */
+async function bootRpc(method: string, params: Record<string, unknown> = {}): Promise<Rpc> {
+  const handler = createMcpHandler(() => buildServer(CFG, DEPS, fixture, BOOT_DEPS));
+  const named = params.uri ?? params.name;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    "mcp-protocol-version": "2026-07-28",
+    "mcp-method": method,
+    ...(typeof named === "string" ? { "mcp-name": named } : {}),
+  };
+  const res = await handler.fetch(new Request("https://muninn.test/", {
+    method: "POST", headers,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {},
+    } } }),
+  }));
+  const text = await res.text();
+  const at = text.indexOf("data: ");
+  return JSON.parse(at >= 0 ? text.slice(at + 6) : text) as Rpc;
+}
+
 const uris = (r: Rpc) => (r.result?.resources as Array<{ uri: string }> ?? []).map((x) => x.uri).sort();
 const firstContent = (r: Rpc) =>
   (r.result?.contents as Array<Record<string, unknown>> ?? [])[0] ?? {};
@@ -163,7 +199,10 @@ const toolText = (r: Rpc) =>
   // discoverable without 17 static registrations.
   eq("the template lists every utility",
      fixture.utilityNames().every((n) => listed.includes(`muninn://utilities/${n}`)), true);
-  eq("nothing else is registered", listed.length, FIXED.length + fixture.utilityNames().length);
+  // +1 for muninn://boot, the one registered resource that is NOT documentation.
+  eq("boot is registered alongside the doc layer", listed.includes("muninn://boot"), true);
+  eq("nothing else is registered",
+     listed.length, FIXED.length + fixture.utilityNames().length + 1);
   const names = (list.result?.resources as Array<{ name: string }>).map((r) => r.name);
   eq("fixed resources are named by topic", names.includes("alpha"), true);
   eq("listed utilities are named by utility name", names.includes("perch_triage"), true);
@@ -308,8 +347,13 @@ const toolText = (r: Rpc) =>
 {
   const tools = (await rpc("tools/list")).result?.tools as Array<{ name: string; description: string }>;
   const byName = Object.fromEntries(tools.map((t) => [t.name, t.description]));
-  eq("the read tools plus the docs door are registered",
-     tools.map((t) => t.name).sort(), ["memory_get", "muninn_config", "muninn_docs", "recall"]);
+  eq("the read tools plus the docs and boot doors are registered",
+     tools.map((t) => t.name).sort(),
+     ["boot", "memory_get", "muninn_config", "muninn_docs", "recall"]);
+  // §9 item 6: boot is BOTH a tool and a resource, because a resource is
+  // something a client offers a user to attach, and boot must fire on its own.
+  eq("boot takes no arguments",
+     Object.keys(((tools.find((t) => t.name === "boot") as any)?.inputSchema?.properties) ?? {}), []);
   // Pointer PRESENCE is registry-dependent and therefore asserted against the
   // real registry further down, not here: this block runs on a fixture whose
   // topics are alpha/beta, so no real tool's candidates resolve and — correctly
@@ -423,6 +467,28 @@ eq("pointerFor emits nothing when no candidate exists",
   );
   eq("the real server declares resources",
      (init.result?.capabilities as Record<string, unknown>).resources !== undefined, true);
+}
+
+// ------------------------------------------------- boot is private, docs are not
+// THE privacy boundary of this server, asserted on the wire rather than in a
+// comment. Documentation is byte-identical for every caller and may be shared;
+// the boot payload is one person's profile, rules and pending work, and a public
+// cache would hand it to whoever asks next.
+
+{
+  const doc = await bootRpc("resources/read", { uri: "muninn://reference/alpha" });
+  eq("a documentation resource is publicly cacheable", doc.result?.cacheScope, "public");
+
+  const boot = await bootRpc("resources/read", { uri: "muninn://boot" });
+  eq("boot reads without error", boot.error, undefined);
+  eq("boot is PRIVATE, never shared", boot.result?.cacheScope, "private");
+  eq("boot's ttl is short, not absent", boot.result?.ttlMs, 60_000);
+  eq("boot is served as markdown", firstContent(boot).mimeType, "text/markdown");
+
+  // Both doors again, for the payload that is not documentation.
+  const viaTool = await bootRpc("tools/call", { name: "boot", arguments: {} });
+  eq("the boot tool and the boot resource return the same bytes",
+     toolText(viaTool), firstContent(boot).text);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
