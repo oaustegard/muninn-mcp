@@ -17,3 +17,34 @@ jobs:
       - run: npm test
       - name: typecheck
         run: npx tsc --noEmit
+
+  # src/docs-generated.ts is committed but derived. Nothing in this repo changes
+  # when muninn-utilities edits a reference doc, so without a check the deferred
+  # documentation quietly describes a version of the memory API that no longer
+  # exists — the exact failure the provenance stamp exists to make diagnosable.
+  #
+  # The comparison ignores `commit` and `generatedAt`, so this only fails when the
+  # documented *content* has moved. An unrelated upstream commit does not turn this
+  # red; a renamed heading or a new recall() parameter does, and the fix is one
+  # `npm run build:docs` away.
+  docs:
+    name: generated docs are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: oaustegard/muninn-utilities
+          path: muninn-utilities
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: generator tests
+        run: node scripts/build-docs.test.mjs
+        env:
+          MUNINN_UTILITIES: ${{ github.workspace }}/muninn-utilities
+      - name: drift check
+        run: node scripts/build-docs.mjs --check
+        env:
+          MUNINN_UTILITIES: ${{ github.workspace }}/muninn-utilities
