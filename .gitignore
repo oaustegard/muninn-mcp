@@ -2,3 +2,9 @@ node_modules/
 .wrangler/
 dist/
 *.log
+
+# Throwaway probes: scripts written to measure or inspect something once
+# (schema widths, wire shapes) and not intended to survive the change that
+# needed them. Ignored so they cannot ride along in an unrelated commit.
+*.scratch.ts
+*.scratch.mjs
