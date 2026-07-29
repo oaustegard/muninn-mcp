@@ -160,16 +160,20 @@ function translate(args) {
     notes.push("tags_any translated to tags+tagMode:any (green has no such sugar)");
   }
 
-  // NOT unsupported, but not honoured either: green performs no expansion, so
-  // the threshold has nothing to gate. expansion_threshold=0 is the one value
-  // where green's behaviour coincides with blue's, which is why the control
-  // entries in queries.json set exactly that.
+  // MAPPED. This branch used to only leave a note, on the reasoning that "green
+  // performs no expansion, so the threshold has nothing to gate". That stopped
+  // being true when src/expansion.ts landed, and the stale branch made green
+  // expand while blue was told not to — which the `-control` probes in
+  // queries.json caught immediately: blue 2 rows, green 10.
+  //
+  // Worth keeping as a scar. A translation layer that silently ignores an
+  // argument does not fail loudly; it runs a DIFFERENT query and reports the
+  // disagreement as a divergence in the code under test. The controls exist
+  // precisely so that "the probe stopped exercising expansion" and "green
+  // stopped honouring the threshold" cannot look alike.
   if (args.expansion_threshold !== undefined) {
-    notes.push(
-      args.expansion_threshold === 0
-        ? "expansion_threshold=0 — blue's expansion is OFF, so this shape is comparable"
-        : `expansion_threshold=${args.expansion_threshold} ignored; green has no expansion stage`,
-    );
+    opts.expansionThreshold = args.expansion_threshold;
+    notes.push(`expansion_threshold=${args.expansion_threshold} mapped to expansionThreshold`);
   }
 
   // UNSUPPORTED: whole retrieval modes green does not implement.
