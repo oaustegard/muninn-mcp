@@ -115,11 +115,11 @@ input it is measuring, and whoever runs first pays for the second. Mitigations:
 Even so, the corpus is shared and mutable. **Two green runs are reproducible;
 blue-then-green is only reproducible if nothing wrote in between.**
 
-**Blue is not deterministic either, and that is not a corpus problem.** The first
-live run of this gate produced exactly one undeclared mismatch — `n-one`,
-`recall('bluesky', n=1)` — where blue and green each returned a different single
-row. Green was not at fault. Blue returns a *different answer to the same query
-in different processes*:
+**Blue was not deterministic either — this is fixed, and the story is worth
+keeping.** The first live run of this gate produced exactly one undeclared
+mismatch: `n-one`, `recall('bluesky', n=1)`, where blue and green each returned a
+different single row. Green was not at fault. Blue returned a *different answer
+to the same query in different processes*:
 
 ```
 PYTHONHASHSEED=0 → 8df0ab0d      PYTHONHASHSEED=3 → 8df0ab0d
@@ -149,7 +149,26 @@ Two consequences for anyone reading this gate:
    non-determinism unless it is fixed on the way across — sorting the tag sets
    before iterating would make blue reproducible and cost nothing.
 
-`n-one` is kept in the set, marked `known-gap`, precisely so this stays visible.
+**Fixed in muninn-utilities#100** by sorting the three tag sets before iterating,
+and `n-one` now matches: blue returns `6edc2ff8` across every `PYTHONHASHSEED`,
+and green — once the expansion was ported — returns the same. The entry has been
+promoted to `expect: "parity"` so it can never silently reopen.
+
+Two things survive the fix and are the reason this section stays:
+
+1. **You cannot diff against an oracle that disagrees with itself.** Blue being
+   reproducible is a precondition for the gate meaning anything, not a nicety. If
+   a future mismatch looks like green's fault, re-run blue before believing it.
+2. **Byte-equal SQL does not imply equal results** when application code sits
+   above the SQL. §3's "the ranking is server-side SQL, so the port is tractable"
+   holds for `_fts5_search` and stops holding at `recall()`. The expansion layer
+   is Python, order-dependent, and porting it faithfully meant porting the
+   `sorted()` too — a port made before #100 would have inherited the
+   non-determinism.
+
+This is also why the gate compares green's `recallWithExpansion`, not its bare
+`search()`: blue's records come from `recall()`, and diffing against a layer that
+never expands compares two different questions.
 
 **Ranked order is not reproducible in the tail, by either side, and the gate
 cannot assert it.** The composite score is a function of wall-clock time:
