@@ -19,11 +19,125 @@ export interface Config {
   TURSO_TOKEN: string;
 }
 
+/**
+ * Canonicalize the configured Turso host into a URL the client will accept.
+ *
+ * Blue's `_init` (turso.py ~line 113) only ever prefixes: if the configured value
+ * does not already start with `http://` or `https://` it becomes
+ * `https://<value>`. The secret is therefore stored bare in blue
+ * (`assistant-memory-oaustegard.aws-us-east-1.turso.io`) but nothing stops an
+ * operator from pasting a scheme-carrying value into `wrangler secret put` —
+ * and the previous green code (`libsql://${TURSO_URL}`) then produced
+ * `libsql://https://host`, which fails at connect time with an opaque error.
+ *
+ * `@libsql/client/web` accepts both `https://` and `libsql://`, so we strip any
+ * scheme the operator supplied and rebuild the one blue would have produced.
+ * That makes the secret work with or without a scheme, and keeps the effective
+ * host byte-identical to blue's `state._URL`.
+ */
+export function normalizeUrl(raw: string): string {
+  const host = raw.trim().replace(/^(libsql|https|http):\/\//i, "");
+  return `https://${host}`;
+}
+
 export function db(config: Config): Client {
   return createClient({
-    url: `libsql://${config.TURSO_URL}`,
+    url: normalizeUrl(config.TURSO_URL),
     authToken: config.TURSO_TOKEN,
   });
+}
+
+// ---------------------------------------------------------------- retry
+
+/**
+ * Errors blue treats as transient. Transcribed from `_retry_with_backoff`
+ * (turso.py ~line 177) — substring matches against `str(e)`, in this order.
+ *
+ * `Expecting value` / `JSONDecodeError` are Python's json errors; they survive
+ * the port because the *cause* is shared, not the parser: a non-JSON body from
+ * the egress proxy. Keeping them costs nothing and keeps the list diffable
+ * against blue.
+ */
+const RETRIABLE_ERRORS = [
+  "503",
+  "429",
+  "Service Unavailable",
+  "SSL",
+  "SSLError",
+  "HANDSHAKE_FAILURE",
+  "DNS cache overflow",
+  "Expecting value",
+  "JSONDecodeError",
+];
+
+export interface RetryOpts {
+  /** Total attempts, not retries-after-the-first — matches Python's `range(max_retries)`. */
+  maxRetries?: number;
+  /** Milliseconds. Blue's 0.5s, expressed in the unit JS timers use. */
+  baseDelay?: number;
+  jitter?: boolean;
+  /** Injectable so tests can assert the delay sequence without real timers. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+function isRetriable(err: unknown): boolean {
+  // Blue matches against `str(e)`, which for an exception is just its message.
+  // Deliberately NOT `String(err)` here: that would prepend the constructor name
+  // ("Error: ..."), so a class named e.g. SSLError would match the "SSL" needle
+  // on its name alone and retry a non-transient failure.
+  const msg = err instanceof Error ? err.message : String(err);
+  return RETRIABLE_ERRORS.some((needle) => msg.includes(needle));
+}
+
+/**
+ * Retry with exponential backoff on transient errors.
+ *
+ * Port of `_retry_with_backoff` (turso.py ~line 177). docs/mcp-migration.md §6
+ * names this as an inherited trap: **Turso 503 on cold start is expected**, so
+ * without this wrapper the first call of every idle period fails. Cloudflare
+ * Workers make that worse, not better — every request may hit a cold isolate.
+ *
+ * Budget: 5 attempts at 500/1000/2000/4000 ms (~7.5s no-jitter, ~7.5-11s with
+ * jitter). Blue's comment records why the older 3-attempt/1s budget was raised:
+ * the egress proxy can take 5-10s to recover from `DNS cache overflow` 503s and
+ * cold starts routinely exhausted the tighter budget.
+ *
+ * Note the ordering: the last attempt re-throws *before* the retriable check,
+ * exactly as in Python. A 503 on the final attempt propagates unchanged.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts: RetryOpts = {},
+): Promise<T> {
+  const {
+    maxRetries = 5,
+    baseDelay = 500,
+    jitter = true,
+    sleep = realSleep,
+  } = opts;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      // Budget exhausted — re-raise whatever we last saw. `>=` rather than `===`
+      // so a nonsensical maxRetries (0, negative) throws on the first failure
+      // instead of spinning forever; Python's `range(0)` degenerates safely, a
+      // JS `for(;;)` does not.
+      if (attempt >= maxRetries - 1) throw err;
+      // Non-retriable (auth, SQL syntax, missing table): fail immediately.
+      // Waiting will not fix a 401 or a typo'd column.
+      if (!isRetriable(err)) throw err;
+      let delay = baseDelay * 2 ** attempt;
+      // Jitter spreads concurrent callers so they do not re-converge on the
+      // same retry instant and re-stampede the proxy that just 503'd.
+      if (jitter) delay *= 1.0 + Math.random() * 0.5;
+      await sleep(delay);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- FTS5 escaping
@@ -65,6 +179,27 @@ export function escapeFts5(query: string): string {
   if (words.length === 0) return '""';
 
   return words.map((w) => `"${w}"*`).join(" OR ");
+}
+
+// ---------------------------------------------------------------- LIKE escaping
+
+/**
+ * Escape SQL LIKE wildcards so a tag is matched literally.
+ *
+ * Direct port of `_escape_like` (turso.py ~line 399). **Replacement order is
+ * load-bearing**: the backslash must be doubled FIRST, otherwise the
+ * backslashes introduced when escaping `%` and `_` get doubled a second time
+ * and the pattern stops matching. Pair this with `LIKE ? ESCAPE '\'`.
+ *
+ * Blue tolerates this being lossy in one direction — a tag containing a literal
+ * `%` is rare — but the escape must exist, because tags are user-authored and an
+ * unescaped `_` is a single-character wildcard that silently widens recall.
+ */
+export function escapeLike(value: string): string {
+  return value
+    .split("\\").join("\\\\")
+    .split("%").join("\\%")
+    .split("_").join("\\_");
 }
 
 // ---------------------------------------------------------------- ranking
@@ -121,6 +256,34 @@ export interface SearchResult {
  * ORDER BY composite_score **ASC** is not a typo: SQLite's bm25() returns
  * negative scores where more-negative is a better match, so the whole composite
  * sorts ascending. Flipping this silently inverts relevance.
+ *
+ * // PARITY — divergences from `turso.py::_fts5_search` found and fixed.
+ * These were bugs, not choices. Each returned a different row set than blue,
+ * which is the only failure mode that matters here: nothing errors, the answer
+ * is just quietly wrong. Do not "clean these up" back toward the nicer form.
+ *
+ *  1. **Missing `m.is_superseded = 0`.** Blue's conditions list opens with
+ *     `["m.deleted_at IS NULL", "m.is_superseded = 0"]`. Green had only the
+ *     first, so every superseded revision of every corrected memory stayed
+ *     eligible — the highest-impact bug of the set, because superseded rows are
+ *     precisely the ones Muninn decided were wrong. Order matters too: the
+ *     harness diffs SQL text.
+ *
+ *  2. **Confidence filter used `COALESCE(m.confidence, 0.5) >= ?`.** Blue emits
+ *     a bare `m.confidence >= ?`. The COALESCE default belongs ONLY to the
+ *     ranking expression (see CONF_FACTOR). The two are not interchangeable: in
+ *     blue a NULL-confidence row fails ANY `conf` threshold (NULL >= x is NULL,
+ *     never true) yet still ranks as if it were 0.5. Coalescing in the filter
+ *     admitted every pre-confidence-era memory to `conf=0.5` searches.
+ *
+ *  3. **Tag filter used `json_each`.** Blue matches tags with
+ *     `m.tags LIKE ? ESCAPE '\'` against `%"tag"%` over the raw JSON text. The
+ *     json_each form is genuinely better SQL — and returns different rows: it
+ *     matches only whole array elements, while blue's LIKE also matches a tag
+ *     embedded as a substring of a longer quoted token. Blue wins. Note also
+ *     that `tag_mode: "all"` appends each tag as its own top-level condition
+ *     (no wrapping parens) while `"any"` wraps the OR-ed group in ONE paren
+ *     pair — an asymmetry in blue that the SQL-text diff would flag.
  */
 export function buildSearch(search: string, opts: SearchOpts = {}): SearchResult {
   const {
@@ -135,23 +298,46 @@ export function buildSearch(search: string, opts: SearchOpts = {}): SearchResult
     episodic = false,
   } = opts;
 
-  const conditions: string[] = ["m.deleted_at IS NULL"];
+  // `is_superseded = 0` is the second condition, not an afterthought appended at
+  // the end: the parity harness diffs the generated SQL text, so condition ORDER
+  // is part of the contract even though it is semantically irrelevant to SQLite.
+  const conditions: string[] = ["m.deleted_at IS NULL", "m.is_superseded = 0"];
   const params: unknown[] = [escapeFts5(search)];
 
-  if (type !== undefined) {
+  // Truthiness, not `!== undefined`. Blue guards this one with `if type:` while
+  // guarding conf/session_id/since/until with `is not None` — an inconsistency,
+  // but a load-bearing one: blue treats `type=""` as "no type filter", whereas
+  // `!== undefined` would emit `m.type = ''` and return nothing at all. Same
+  // silent-wrong-answer class as the PARITY notes below.
+  if (type) {
     conditions.push("m.type = ?");
     params.push(type);
   }
   if (tags && tags.length > 0) {
-    // Tag membership rides json_each over the stored JSON array, matching Python.
-    const clause = tags
-      .map(() => "EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?)")
-      .join(tagMode === "all" ? " AND " : " OR ");
-    conditions.push(`(${clause})`);
-    params.push(...tags);
+    // Tags are stored as a JSON array *string*; blue matches them as text with
+    // LIKE over the quoted element, not with json_each. See PARITY note 3.
+    if (tagMode === "all") {
+      // "all": one top-level condition per tag, joined by the outer " AND ".
+      // Deliberately unparenthesized — blue emits `a AND b`, not `(a AND b)`.
+      for (const t of tags) {
+        conditions.push("m.tags LIKE ? ESCAPE '\\'");
+        params.push(`%"${escapeLike(t)}"%`);
+      }
+    } else {
+      // "any": OR-ed together and wrapped in ONE paren group, so the outer
+      // " AND " join cannot bind tighter than the OR and admit unrelated rows.
+      const tagConds: string[] = [];
+      for (const t of tags) {
+        tagConds.push("m.tags LIKE ? ESCAPE '\\'");
+        params.push(`%"${escapeLike(t)}"%`);
+      }
+      conditions.push(`(${tagConds.join(" OR ")})`);
+    }
   }
   if (conf !== undefined) {
-    conditions.push("COALESCE(m.confidence, 0.5) >= ?");
+    // No COALESCE here — see PARITY note 2. A NULL-confidence row must fail the
+    // threshold outright, even though it ranks as 0.5.
+    conditions.push("m.confidence >= ?");
     params.push(conf);
   }
   if (sessionId !== undefined) {
@@ -198,13 +384,128 @@ export interface MemoryRow {
   composite_score?: number;
 }
 
-/** Run an FTS search and return raw rows. */
+/**
+ * Run an FTS search and return raw rows.
+ *
+ * KNOWN DIVERGENCE (wave 2, not a bug in this file): blue's `memory.py::recall`
+ * does not stop here. When a search returns fewer than `expansion_threshold`
+ * (default 3) results, it runs a multi-stage expansion — re-searching on the
+ * tags of the stage-1 hits, then on co-occurrence-expanded tags — and re-ranks
+ * the union with provenance boosts (BOOST_PRIMARY 3.0, BOOST_STAGE1_TAG 2.0,
+ * BOOST_COOCCUR 1.5, BOOST_HOP2 1.0). See `memory.py::recall` (~line 610).
+ *
+ * Green therefore matches blue for any query returning >= 3 results, and
+ * diverges — returning a strict subset, in composite order rather than boost
+ * order — for sparse queries. `cooccurrenceExpand` below is the first half of
+ * that machinery, ported and testable; the re-ranking is not yet ported.
+ */
 export async function search(
   client: Client,
   query: string,
   opts: SearchOpts = {},
 ): Promise<MemoryRow[]> {
   const { sql, params } = buildSearch(query, opts);
-  const rs = await client.execute({ sql, args: params as never });
+  // Cold-start 503s are expected here, not exceptional — see withRetry.
+  const rs = await withRetry(() => client.execute({ sql, args: params as never }));
   return rs.rows as unknown as MemoryRow[];
+}
+
+// ---------------------------------------------------------------- co-occurrence
+
+export interface CooccurrenceOpts {
+  /** Max rows pulled *per input tag*, not per call. Blue's default is 10. */
+  n?: number;
+  minPmi?: number;
+}
+
+export interface CooccurrenceTag {
+  tag: string;
+  pmi: number;
+  count: number;
+}
+
+interface CooccurrenceRow {
+  tag1: string;
+  tag2: string;
+  count: number | null;
+  pmi: number | null;
+}
+
+/**
+ * The per-tag co-occurrence probe, split out pure so its SQL text is testable.
+ *
+ * Transcribed character-for-character from `_cooccurrence_expand` (turso.py
+ * ~line 837), including its indentation — the parity harness diffs SQL text.
+ * The pair table is undirected and stores each pair once, hence
+ * `tag1 = ? OR tag2 = ?` with the same tag bound twice.
+ */
+export function buildCooccurrenceQuery(
+  tag: string,
+  opts: CooccurrenceOpts = {},
+): SearchResult {
+  const { n = 10, minPmi = 0.0 } = opts;
+  const sql = `SELECT tag1, tag2, count, pmi FROM tag_cooccurrence
+               WHERE (tag1 = ? OR tag2 = ?) AND pmi >= ?
+               ORDER BY pmi DESC LIMIT ?`;
+  return { sql, params: [tag, tag, minPmi, n] };
+}
+
+/**
+ * Expand a tag set to related tags, ranked by PMI.
+ *
+ * Port of `_cooccurrence_expand` (turso.py ~line 837). docs/mcp-migration.md §3
+ * flags this as one of the four real parity risks: it is stateful against the
+ * `tag_cooccurrence` table and "easy to get subtly wrong".
+ *
+ * The three details that are easy to lose:
+ *  - **A missing table is not an error.** `tag_cooccurrence` is built by a
+ *    separate maintenance pass and may simply not exist yet, so blue probes it
+ *    and returns `[]` rather than propagating. Green must swallow the same way,
+ *    or every sparse recall on a fresh DB turns into a tool error.
+ *  - **Input tags are excluded from the output.** The caller already has them;
+ *    re-emitting them would let them win their own expansion.
+ *  - **Best PMI wins per tag, and ties keep first-seen order.** Python's dict
+ *    preserves insertion order and `list.sort` is stable; Map + Array.sort give
+ *    the same ordering, so a tie between two input tags' expansions resolves
+ *    identically in both worlds.
+ */
+export async function cooccurrenceExpand(
+  client: Client,
+  tags: string[],
+  opts: CooccurrenceOpts = {},
+): Promise<CooccurrenceTag[]> {
+  if (!tags || tags.length === 0) return [];
+
+  try {
+    await withRetry(() => client.execute("SELECT 1 FROM tag_cooccurrence LIMIT 1"));
+  } catch {
+    return []; // Table doesn't exist — expansion is simply unavailable.
+  }
+
+  const seen = new Map<string, { pmi: number; count: number }>();
+  const inputSet = new Set(tags);
+
+  for (const tag of tags) {
+    const { sql, params } = buildCooccurrenceQuery(tag, opts);
+    const rs = await withRetry(() => client.execute({ sql, args: params as never }));
+    for (const row of rs.rows as unknown as CooccurrenceRow[]) {
+      // The co-occurring tag is whichever side of the pair is not the probe.
+      const other = row.tag1 === tag ? row.tag2 : row.tag1;
+      if (inputSet.has(other)) continue;
+      // Blue's `float(row['pmi']) if row['pmi'] else 0.0` — a falsy check, so
+      // NULL, 0 and 0.0 all collapse to 0.0. Same here.
+      const pmi = row.pmi ? Number(row.pmi) : 0.0;
+      const count = row.count ? Math.trunc(Number(row.count)) : 0;
+      const prev = seen.get(other);
+      if (prev === undefined || pmi > prev.pmi) seen.set(other, { pmi, count });
+    }
+  }
+
+  const result: CooccurrenceTag[] = [...seen.entries()].map(([tag, v]) => ({
+    tag,
+    pmi: v.pmi,
+    count: v.count,
+  }));
+  result.sort((a, b) => b.pmi - a.pmi);
+  return result;
 }

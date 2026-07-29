@@ -12,7 +12,17 @@
  * memories come back rather than failing loudly.
  */
 import golden from "./fts-golden.json" with { type: "json" };
-import { escapeFts5, buildSearch, compositeExpr } from "./turso.ts";
+import {
+  escapeFts5,
+  escapeLike,
+  buildSearch,
+  compositeExpr,
+  normalizeUrl,
+  withRetry,
+  buildCooccurrenceQuery,
+  cooccurrenceExpand,
+} from "./turso.ts";
+import type { Client } from "@libsql/client/web";
 
 let pass = 0, fail = 0;
 const eq = (n: string, g: unknown, w: unknown) =>
@@ -63,20 +73,243 @@ const capped = buildSearch("x", { n: 5, type: "decision" });
 eq("type filter binds after the MATCH", capped.params[1], "decision");
 eq("explicit n is threaded through", capped.params[capped.params.length - 1], 5);
 
-const anyTags = buildSearch("x", { tags: ["a", "b"] });
-eq("tag_mode any ORs the tag clauses",
-   anyTags.sql.includes("WHERE value = ?) OR EXISTS"), true);
-const allTags = buildSearch("x", { tags: ["a", "b"], tagMode: "all" });
-eq("tag_mode all ANDs the tag clauses",
-   allTags.sql.includes("WHERE value = ?) AND EXISTS"), true);
-eq("tag params are bound in order", anyTags.params.slice(1, 3), ["a", "b"]);
+// Superseded rows are the ones Muninn already decided were wrong. Blue filters
+// them out in the WHERE clause; green omitting this returned every stale
+// revision of every corrected memory. Second in the list, because the harness
+// diffs SQL text and condition order is part of that text.
+eq("superseded rows are excluded", base.sql.includes("m.is_superseded = 0"), true);
+eq("deleted/superseded conditions keep blue's order",
+   base.sql.includes("m.deleted_at IS NULL AND m.is_superseded = 0"), true);
 
 const windowed = buildSearch("x", { since: "2026-01-01", until: "2026-06-01", conf: 0.7 });
 eq("conf/since/until all bind", windowed.params.slice(1, 4), [0.7, "2026-01-01", "2026-06-01"]);
+// The COALESCE default lives in the RANKING expression only. In blue a
+// NULL-confidence row fails any conf threshold outright (NULL >= x is NULL) yet
+// still ranks as 0.5 — coalescing in the filter admitted rows blue excludes.
+eq("conf filter compares the raw column", windowed.sql.includes("m.confidence >= ?"), true);
+eq("conf filter does NOT coalesce",
+   windowed.sql.includes("COALESCE(m.confidence, 0.5) >= ?"), false);
+eq("but the ranking expression still coalesces to 0.5",
+   windowed.sql.includes("(1.0 + COALESCE(m.confidence, 0.5) * 0.15)"), true);
 
 // An empty query must still produce a legal MATCH — an empty expression is an
 // FTS5 syntax error, which is why the Python returns the literal '""'.
 eq("empty query yields a legal MATCH", buildSearch("   ").params[0], '""');
+
+// Blue guards the type filter with `if type:` — truthiness — while guarding
+// conf/session_id/since/until with `is not None`. So an empty-string type means
+// "no filter" in blue; `!== undefined` would emit `m.type = ''` and match nothing.
+eq("empty-string type is treated as no type filter",
+   buildSearch("x", { type: "" }).sql.includes("m.type = ?"), false);
+eq("a real type still filters",
+   buildSearch("x", { type: "decision" }).sql.includes("m.type = ?"), true);
+
+// ---------------------------------------------------------------- LIKE escaping
+
+console.log("\n--- LIKE escaping (_escape_like)");
+// Backslash MUST be doubled first: escape %/_ first and the backslashes they
+// introduce get doubled again, breaking the pattern.
+eq("backslash is doubled", escapeLike("a\\b"), "a\\\\b");
+eq("percent is escaped", escapeLike("50%"), "50\\%");
+eq("underscore is escaped", escapeLike("snake_case"), "snake\\_case");
+eq("replacement order: backslash before wildcards", escapeLike("\\_"), "\\\\\\_");
+eq("plain tags pass through untouched", escapeLike("muninn-ops"), "muninn-ops");
+
+// ---------------------------------------------------------------- tag filter
+
+console.log("\n--- tag filter (LIKE form, per blue)");
+const anyTags = buildSearch("x", { tags: ["a", "b"] });
+// Blue matches tags as text against the stored JSON array, not via json_each.
+// json_each is better SQL and returns different rows; blue wins.
+eq("tags use LIKE ... ESCAPE, not json_each",
+   anyTags.sql.includes("m.tags LIKE ? ESCAPE '\\'"), true);
+eq("json_each is gone", anyTags.sql.includes("json_each"), false);
+eq("tag params are the quoted-element LIKE patterns",
+   anyTags.params.slice(1, 3), ['%"a"%', '%"b"%']);
+// The paren asymmetry between the two modes is blue's, and the SQL-text diff
+// would flag it, so it is replicated exactly rather than normalized.
+eq("tag_mode any wraps the OR group in ONE paren pair",
+   anyTags.sql.includes("(m.tags LIKE ? ESCAPE '\\' OR m.tags LIKE ? ESCAPE '\\')"), true);
+
+const allTags = buildSearch("x", { tags: ["a", "b"], tagMode: "all" });
+eq("tag_mode all appends bare top-level conditions",
+   allTags.sql.includes("m.tags LIKE ? ESCAPE '\\' AND m.tags LIKE ? ESCAPE '\\'"), true);
+eq("tag_mode all adds no wrapping parens",
+   allTags.sql.includes("(m.tags LIKE"), false);
+eq("tag values are LIKE-escaped before binding",
+   buildSearch("x", { tags: ["a_b"] }).params[1], '%"a\\_b"%');
+
+// ---------------------------------------------------------------- URL normalization
+
+console.log("\n--- URL normalization");
+const HOST = "assistant-memory-oaustegard.aws-us-east-1.turso.io";
+// Blue stores the host bare and prefixes https:// in _init. Green previously
+// did `libsql://${TURSO_URL}`, which produced `libsql://https://host` for any
+// scheme-carrying secret. All three shapes must land on the same URL.
+eq("bare host gains https://", normalizeUrl(HOST), `https://${HOST}`);
+eq("https:// is preserved, not doubled", normalizeUrl(`https://${HOST}`), `https://${HOST}`);
+eq("libsql:// is rewritten to https://", normalizeUrl(`libsql://${HOST}`), `https://${HOST}`);
+eq("http:// is canonicalized upward", normalizeUrl(`http://${HOST}`), `https://${HOST}`);
+
+// ---------------------------------------------------------------- retry
+
+console.log("\n--- retry with backoff (§6: cold-start 503 is expected)");
+
+/** Collects the delays a run would have slept, so no real timer is involved. */
+function recorder() {
+  const delays: number[] = [];
+  return {
+    delays,
+    sleep: async (ms: number) => { delays.push(ms); },
+  };
+}
+
+{
+  const r = recorder();
+  let calls = 0;
+  const got = await withRetry(async () => {
+    calls++;
+    if (calls < 3) throw new Error("503 Service Unavailable");
+    return "ok";
+  }, { sleep: r.sleep });
+  eq("retries a 503 and eventually succeeds", got, "ok");
+  eq("503 run made exactly 3 attempts", calls, 3);
+}
+
+{
+  const r = recorder();
+  let calls = 0;
+  let caught: string | null = null;
+  try {
+    await withRetry(async () => {
+      calls++;
+      throw new Error('near "SELCT": syntax error');
+    }, { sleep: r.sleep });
+  } catch (e) { caught = (e as Error).message; }
+  // A typo will not fix itself by waiting; blue fails these immediately.
+  eq("syntax error is not retried", calls, 1);
+  eq("syntax error propagates unchanged", caught, 'near "SELCT": syntax error');
+  eq("no sleep on a non-retriable error", r.delays.length, 0);
+}
+
+{
+  const r = recorder();
+  let calls = 0;
+  let caught: string | null = null;
+  try {
+    await withRetry(async () => {
+      calls++;
+      throw new Error("HTTP 503 DNS cache overflow");
+    }, { sleep: r.sleep });
+  } catch (e) { caught = (e as Error).message; }
+  eq("budget is 5 attempts", calls, 5);
+  eq("exhausted budget re-throws the last error", caught, "HTTP 503 DNS cache overflow");
+  eq("4 sleeps for 5 attempts", r.delays.length, 4);
+}
+
+{
+  const r = recorder();
+  await withRetry(async () => { throw new Error("429"); },
+                  { jitter: false, sleep: r.sleep }).catch(() => {});
+  // 500 × 2**attempt. Blue's budget was widened to this precisely because the
+  // egress proxy can take 5-10s to recover.
+  eq("delay sequence is 500/1000/2000/4000 without jitter", r.delays, [500, 1000, 2000, 4000]);
+}
+
+{
+  const r = recorder();
+  await withRetry(async () => { throw new Error("SSL: HANDSHAKE_FAILURE"); },
+                  { jitter: false, sleep: r.sleep }).catch(() => {});
+  eq("SSL handshake failures are retriable", r.delays.length, 4);
+}
+
+{
+  const r = recorder();
+  let calls = 0;
+  await withRetry(async () => { calls++; throw new Error("401 Unauthorized"); },
+                  { sleep: r.sleep }).catch(() => {});
+  eq("auth failure is not retried", calls, 1);
+}
+
+{
+  const r = recorder();
+  await withRetry(async () => { throw new Error("boom"); },
+                  { maxRetries: 2, jitter: false, sleep: r.sleep }).catch(() => {});
+  eq("maxRetries counts attempts, not retries", r.delays.length, 0);
+}
+
+// ---------------------------------------------------------------- co-occurrence
+
+console.log("\n--- co-occurrence expansion");
+
+const coQ = buildCooccurrenceQuery("turso", { n: 5, minPmi: 0.5 });
+eq("pair table is undirected — tag bound on both sides",
+   coQ.sql.includes("WHERE (tag1 = ? OR tag2 = ?) AND pmi >= ?"), true);
+eq("ordered by PMI descending with a limit",
+   coQ.sql.includes("ORDER BY pmi DESC LIMIT ?"), true);
+eq("params are [tag, tag, minPmi, n]", coQ.params, ["turso", "turso", 0.5, 5]);
+eq("defaults are n=10, min_pmi=0.0",
+   buildCooccurrenceQuery("t").params, ["t", "t", 0.0, 10]);
+
+/** Minimal stand-in for the libsql Client: canned rows, no network. */
+function fakeClient(
+  rows: Record<string, unknown[][]>,
+  opts: { probeFails?: boolean } = {},
+): Client {
+  return {
+    execute: async (stmt: string | { sql: string; args?: unknown[] }) => {
+      const sql = typeof stmt === "string" ? stmt : stmt.sql;
+      if (sql.includes("LIMIT 1")) {
+        if (opts.probeFails) throw new Error("no such table: tag_cooccurrence");
+        return { rows: [] };
+      }
+      const args = typeof stmt === "string" ? [] : (stmt.args ?? []);
+      const tag = String(args[0]);
+      return {
+        rows: (rows[tag] ?? []).map(([tag1, tag2, count, pmi]) => ({ tag1, tag2, count, pmi })),
+      };
+    },
+  } as unknown as Client;
+}
+
+eq("empty input short-circuits", await cooccurrenceExpand(fakeClient({}), []), []);
+// The table is built by a separate maintenance pass and may not exist yet;
+// blue swallows that rather than turning every sparse recall into an error.
+eq("missing table yields [] rather than throwing",
+   await cooccurrenceExpand(fakeClient({}, { probeFails: true }), ["a"]), []);
+
+{
+  const expanded = await cooccurrenceExpand(
+    fakeClient({
+      turso: [
+        ["turso", "sqlite", 12, 0.9],   // "other" is tag2
+        ["libsql", "turso", 8, 0.4],    // "other" is tag1 — pair is undirected
+        ["turso", "memory", 3, 0.2],    // already an input tag, dropped
+      ],
+      memory: [
+        ["memory", "sqlite", 5, 0.95],  // better PMI for sqlite than 0.9
+        ["memory", "recall", 4, 0.6],
+      ],
+    }),
+    ["turso", "memory"],
+  );
+  eq("input tags are excluded from their own expansion",
+     expanded.some((e) => e.tag === "turso" || e.tag === "memory"), false);
+  eq("best PMI per tag wins, sorted descending", expanded, [
+    { tag: "sqlite", pmi: 0.95, count: 5 },
+    { tag: "recall", pmi: 0.6, count: 4 },
+    { tag: "libsql", pmi: 0.4, count: 8 },
+  ]);
+}
+
+{
+  // Blue's `float(row['pmi']) if row['pmi'] else 0.0` is a falsy check, so NULL
+  // and 0 both collapse to 0.0 rather than raising.
+  const expanded = await cooccurrenceExpand(
+    fakeClient({ a: [["a", "b", null, null]] }), ["a"],
+  );
+  eq("null pmi/count collapse to 0", expanded, [{ tag: "b", pmi: 0, count: 0 }]);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
