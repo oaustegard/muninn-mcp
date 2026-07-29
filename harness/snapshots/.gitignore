@@ -1,0 +1,12 @@
+# Snapshots are CAPTURES, not source.
+#
+# Each one is a record of what one side answered at one instant against a live,
+# mutable, single-homed corpus. Committing them would imply they are a baseline
+# you can diff against later — they are not: the corpus moves, so a snapshot is
+# only meaningful against its counterpart taken minutes earlier. The frozen
+# artefact in this harness is queries.json, not the answers.
+#
+# They also contain the ids of one person's private memories.
+#
+# Keep the directory, ignore the contents.
+*.json

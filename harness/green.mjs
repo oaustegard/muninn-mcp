@@ -1,0 +1,298 @@
+/**
+ * GREEN capture — run the frozen golden query set through the TypeScript.
+ *
+ *   TURSO_URL=... TURSO_TOKEN=... node --experimental-strip-types harness/green.mjs
+ *
+ * Writes harness/snapshots/green.json in the same record shape as blue.py.
+ * Exit 0 on a clean capture, 2 if credentials are missing.
+ *
+ * ------------------------------------------------------------------ NO WORKER
+ *
+ * This imports `src/turso.ts` and `src/tools.ts` DIRECTLY and builds its own
+ * libsql client. It does not talk to a deployed Worker, and that is deliberate:
+ * the gate must be runnable before anything is deployed, and a Worker in the
+ * path adds a network hop, an auth token and a JSON-RPC envelope that can all
+ * fail for reasons unrelated to retrieval. What we want to compare is the QUERY
+ * LAYER. `src/index.ts` is a transport over exactly this code, so testing here
+ * tests the thing that can be wrong.
+ *
+ * The consequence — and it is a real gap, not a technicality — is that this
+ * proves nothing about the MCP envelope, OAuth, or the Worker runtime. It
+ * proves the SQL and the ranking. §5's byte-equality claim about the boot
+ * payload is likewise out of scope here; green serves no boot payload yet.
+ *
+ * ------------------------------------------------------------- IMPORT SURFACE
+ *
+ * We import ONLY `db` and `search` from turso.ts, plus `recall` from tools.ts.
+ * src/turso.ts is under concurrent development (withRetry, normalizeUrl,
+ * escapeLike, cooccurrenceExpand are all landing). Binding this harness to a
+ * wide surface would make the gate break every time the port progresses, which
+ * is precisely backwards — the gate should break when RESULTS change.
+ *
+ * `search()` is what `tools.ts::recall` calls, so this is green's real path and
+ * not a test-only shortcut.
+ *
+ * ------------------------------------------------------------------ TRANSLATION
+ *
+ * queries.json speaks BLUE's kwargs, because blue is the specification. This
+ * file maps them onto green's SearchOpts. Three things can happen to an arg:
+ *
+ *   MAPPED       there is a direct equivalent (tag_mode -> tagMode).
+ *   TRANSLATED   blue resolves it to something greener before building SQL, and
+ *                we do the same, so the probe tests the SQL rather than the
+ *                sugar (tags_all -> tags + tagMode:"all"). Recorded in `notes`.
+ *   UNSUPPORTED  green has no equivalent AT ALL (strict, fetch_all,
+ *                exploration). We do NOT silently drop these — dropping them
+ *                would run a different, easier query and report a false match.
+ *                We record `ids: null` and an error naming the missing feature.
+ *
+ * The distinction is the whole point. A harness that quietly degrades the query
+ * until both sides agree is worse than no harness.
+ */
+
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { db, search, buildSearch } from "../src/turso.ts";
+import { recall as toolRecall } from "../src/tools.ts";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const QUERIES = join(HERE, "queries.json");
+const OUT = join(HERE, "snapshots", "green.json");
+
+/** Blue reads TURSO_URL/TURSO_TOKEN; green's Config uses the same two names, so
+ *  one export drives both captures. TURSO_DB_URL is accepted because some boot
+ *  paths in muninn-utilities set that spelling instead. */
+const TURSO_URL = process.env.TURSO_URL ?? process.env.TURSO_DB_URL ?? "";
+const TURSO_TOKEN = process.env.TURSO_TOKEN ?? "";
+
+function die(code, msg) {
+  console.error(`\n${msg}\n`);
+  process.exit(code);
+}
+
+function oneLine(s, limit = 400) {
+  return String(s).replace(/\s+/g, " ").slice(0, limit);
+}
+
+/**
+ * Blue kwargs -> green SearchOpts.
+ *
+ * Returns { queryText, opts, unsupported[], notes[] }. Nothing here tries to
+ * emulate blue; it only expresses what green CAN express and names what it
+ * cannot.
+ */
+function translate(args) {
+  const opts = {};
+  const unsupported = [];
+  const notes = [];
+
+  // `query` is a first-class alias for `search` in blue, and `query` wins when
+  // both are given (memory.py: `if query is not None: search = query`).
+  let queryText = args.search;
+  if (args.query !== undefined) queryText = args.query;
+
+  // Blue's recall() defaults search to None and routes falsy search AWAY from
+  // FTS entirely. Green has only the FTS path, so a missing search becomes an
+  // empty string here — which escapes to the literal '""'. That is a real
+  // divergence, flagged in queries.json as a known gap, not papered over.
+  if (queryText === undefined || queryText === null) {
+    queryText = "";
+    notes.push("no search term; green has no non-FTS path and will MATCH '\"\"'");
+  }
+
+  if (args.n !== undefined) opts.n = args.n;
+  if (args.type !== undefined) opts.type = args.type;
+  if (args.conf !== undefined) opts.conf = args.conf;
+  if (args.session_id !== undefined) opts.sessionId = args.session_id;
+  if (args.since !== undefined) opts.since = args.since;
+  if (args.until !== undefined) opts.until = args.until;
+  if (args.episodic !== undefined) opts.episodic = args.episodic;
+  if (args.tags !== undefined) opts.tags = args.tags;
+  if (args.tag_mode !== undefined) opts.tagMode = args.tag_mode;
+
+  // TRANSLATED: blue resolves tags_all/tags_any into tags+tag_mode before any
+  // SQL is built, so mirroring that here keeps the probe pointed at the SQL.
+  // The missing SUGAR is still a gap — it is an API-surface item for §8
+  // progressive disclosure, not a retrieval bug, and belongs in a different
+  // column of the report than a wrong row set.
+  if (args.tags_all !== undefined && args.tags_any !== undefined) {
+    unsupported.push("tags_all+tags_any (blue raises ValueError)");
+  } else if (args.tags_all !== undefined) {
+    opts.tags = args.tags_all;
+    opts.tagMode = "all";
+    notes.push("tags_all translated to tags+tagMode:all (green has no such sugar)");
+  } else if (args.tags_any !== undefined) {
+    opts.tags = args.tags_any;
+    opts.tagMode = "any";
+    notes.push("tags_any translated to tags+tagMode:any (green has no such sugar)");
+  }
+
+  // NOT unsupported, but not honoured either: green performs no expansion, so
+  // the threshold has nothing to gate. expansion_threshold=0 is the one value
+  // where green's behaviour coincides with blue's, which is why the control
+  // entries in queries.json set exactly that.
+  if (args.expansion_threshold !== undefined) {
+    notes.push(
+      args.expansion_threshold === 0
+        ? "expansion_threshold=0 — blue's expansion is OFF, so this shape is comparable"
+        : `expansion_threshold=${args.expansion_threshold} ignored; green has no expansion stage`,
+    );
+  }
+
+  // UNSUPPORTED: whole retrieval modes green does not implement.
+  if (args.strict) unsupported.push("strict (blue uses summary LIKE, ordered by t DESC)");
+  if (args.fetch_all) unsupported.push("fetch_all (blue nulls the search and SELECTs everything)");
+  if (args.exploration) unsupported.push("exploration (blue reranks client-side in Python)");
+
+  return { queryText, opts, unsupported, notes };
+}
+
+/** True when the args fit tools.ts::recall's four-argument public surface. */
+function fitsToolSurface(args, unsupported) {
+  if (unsupported.length) return false;
+  const allowed = new Set(["search", "query", "n", "tags", "type"]);
+  return Object.keys(args).every((k) => allowed.has(k));
+}
+
+/**
+ * --dry-run: show what green WOULD send, without connecting.
+ *
+ * Worth having for two reasons. It is the only way to review the translation
+ * layer on a machine with no credentials — which is most machines, and was the
+ * case when this harness was written. And it prints the BOUND PARAMETERS, which
+ * is where the cheap failures live: a swapped since/until, a `type: ""` that
+ * became a real predicate, a tag pattern that lost its LIKE escaping. Those are
+ * visible here for free, before you spend a live capture on them.
+ *
+ * It does NOT prove parity. Blue's SQL is built by different code in a different
+ * language; only a live capture compares answers.
+ */
+function dryRun(queries) {
+  console.log("green --dry-run: translation and bound parameters, no connection\n");
+  for (const q of queries) {
+    const { queryText, opts, unsupported, notes } = translate(q.args);
+    console.log(`${q.id}`);
+    console.log(`  args    ${JSON.stringify(q.args)}`);
+    if (unsupported.length) {
+      console.log(`  SKIP    unsupported-in-green: ${unsupported.join("; ")}`);
+    } else {
+      const { params } = buildSearch(String(queryText), opts);
+      console.log(`  query   ${JSON.stringify(queryText)}`);
+      console.log(`  opts    ${JSON.stringify(opts)}`);
+      console.log(`  params  ${JSON.stringify(params)}`);
+    }
+    for (const n of notes) console.log(`  note    ${n}`);
+    console.log("");
+  }
+  const skipped = queries.filter((q) => translate(q.args).unsupported.length).length;
+  console.log(`${queries.length} queries, ${skipped} unsupported in green`);
+}
+
+async function main() {
+  const spec = JSON.parse(readFileSync(QUERIES, "utf-8"));
+  const queries = spec.queries;
+
+  if (process.argv.includes("--dry-run")) {
+    dryRun(queries);
+    process.exit(0);
+  }
+
+  if (!TURSO_URL || !TURSO_TOKEN) {
+    die(
+      2,
+      "TURSO CREDENTIALS NOT SET — nothing was captured.\n\n" +
+        `  TURSO_URL   ${TURSO_URL ? "set" : "MISSING"}\n` +
+        `  TURSO_TOKEN ${TURSO_TOKEN ? "set" : "MISSING"}\n\n` +
+        "Green needs them in the environment; unlike blue it does not read\n" +
+        "/mnt/project/*.env. Export both and run blue.py and green.mjs back to\n" +
+        "back — they read the same two variable names.",
+    );
+  }
+
+  const config = { TURSO_URL, TURSO_TOKEN };
+  const client = db(config);
+
+  console.log(`green: src/turso.ts + src/tools.ts (no Worker in the path)`);
+  console.log(`green: ${queries.length} queries\n`);
+
+  const records = [];
+  const tStart = Date.now();
+
+  for (const q of queries) {
+    const { queryText, opts, unsupported, notes } = translate(q.args);
+    const t0 = Date.now();
+    let rec;
+
+    if (unsupported.length) {
+      // Refuse rather than run a weaker query. `ids: null` is the same shape
+      // blue uses for a raised exception, so diff.mjs handles both uniformly.
+      rec = {
+        id: q.id,
+        ids: null,
+        count: 0,
+        error: `unsupported-in-green: ${unsupported.join("; ")}`,
+      };
+    } else {
+      try {
+        const rows = await search(client, String(queryText), opts);
+        rec = { id: q.id, ids: rows.map((r) => String(r.id)), count: rows.length, error: null };
+      } catch (e) {
+        rec = { id: q.id, ids: null, count: 0, error: `${e?.name ?? "Error"}: ${oneLine(e?.message ?? e)}` };
+      }
+    }
+    rec.ms = Date.now() - t0;
+    if (notes.length) rec.notes = notes;
+
+    // Second, cheaper probe: run the SAME query through tools.ts::recall, the
+    // actual MCP entry point, and keep the 8-char id prefixes it prints. This
+    // is an INTERNAL green consistency check, never compared against blue —
+    // its job is to surface the tool layer's own transforms, chiefly the
+    // `Math.min(Math.max(Number(n) || 10, 1), 50)` clamp. n=200 silently
+    // becomes 50 there and n=0 silently becomes 10 (because `0 || 10`), so the
+    // tool answers a different question than the one you asked.
+    if (rec.ids && fitsToolSurface(q.args, unsupported)) {
+      try {
+        const text = await toolRecall(config, {
+          query: String(queryText),
+          n: q.args.n,
+          tags: q.args.tags,
+          type: q.args.type,
+        });
+        rec.toolPrefixes =
+          text === "No memories matched."
+            ? []
+            : [...text.matchAll(/^- \[([0-9a-f]{1,8})\]/gm)].map((m) => m[1]);
+      } catch (e) {
+        rec.toolPrefixes = null;
+        rec.toolError = oneLine(e?.message ?? e, 200);
+      }
+    }
+
+    records.push(rec);
+    const mark = rec.error ? "ERR " : "    ";
+    console.log(
+      `${mark}${q.id.padEnd(28)} n=${String(rec.count).padEnd(4)} ${String(rec.ms).padStart(5)}ms` +
+        (rec.error ? `  ${rec.error.slice(0, 80)}` : ""),
+    );
+  }
+
+  const snapshot = {
+    side: "green",
+    source: "src/turso.ts::search (direct client, no Worker)",
+    captured_at: new Date().toISOString(),
+    elapsed_s: Math.round((Date.now() - tStart) / 100) / 10,
+    query_count: records.length,
+    records,
+  };
+  mkdirSync(dirname(OUT), { recursive: true });
+  writeFileSync(OUT, JSON.stringify(snapshot, null, 1) + "\n", "utf-8");
+
+  const errs = records.filter((r) => r.error).length;
+  console.log(`\nwrote ${OUT}`);
+  console.log(`${records.length} captured, ${errs} errored, ${snapshot.elapsed_s}s`);
+  // Same rule as blue.py: capturing is not judging. diff.mjs owns the verdict.
+  process.exit(0);
+}
+
+main().catch((e) => die(1, `green capture aborted: ${e?.stack ?? e}`));
