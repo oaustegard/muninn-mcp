@@ -1,0 +1,654 @@
+{
+ "_comment": [
+  "FROZEN GOLDEN QUERY SET — the gate for docs/mcp-migration.md §5 Stage 1.",
+  "",
+  "Every entry is a `recall` shape spoken in BLUE's vocabulary (the kwargs of",
+  "remembering/scripts/memory.py::recall). blue.py passes `args` through almost",
+  "verbatim; green.mjs translates them onto src/turso.ts's SearchOpts and",
+  "declares anything it cannot express. That asymmetry is deliberate: blue is",
+  "the specification, so the query set is written in blue's language and green",
+  "is measured against it, not the other way round.",
+  "",
+  "FIELDS",
+  "  id      stable slug. NEVER renumber or reuse — snapshots and CI history",
+  "          key off it. Add new probes at the end of their group.",
+  "  why     what divergence this probes. A golden set nobody can interpret",
+  "          rots into a list of magic strings; if you add a query without a",
+  "          `why`, you have added noise, not coverage.",
+  "  args    kwargs for blue's recall(). `raw` and `auto_strengthen` are set by",
+  "          blue.py and must not appear here.",
+  "  expect  \"parity\"   — blue and green MUST agree; a mismatch is a bug.",
+  "          \"known-gap\" — green is known not to implement this yet. Still run,",
+  "                        still reported; the gate stays red until it lands or",
+  "                        the entry is demoted. See `gap`.",
+  "  gap     required when expect is \"known-gap\": which missing green feature.",
+  "",
+  "ON CORPUS DEPENDENCE",
+  "  These queries run against the live shared database (§4: data is",
+  "  single-homed). The absolute result sets therefore change over time — that",
+  "  is fine and expected, because the harness never asserts on contents. It",
+  "  asserts that TWO ACCESS PATHS AGREE at the same instant. Search terms were",
+  "  chosen to be corpus-shaped (turso, mcp, bluesky, perch, boot) so most",
+  "  probes return rows, and a handful were chosen to return nothing on",
+  "  purpose — see the `sparse-*` group, which is where the real signal is."
+ ],
+ "queries": [
+  {
+   "id": "text-single-term",
+   "why": "Floor case. One term, no filters. If this diverges, nothing below is interpretable — check FTS5 escaping and the composite ORDER BY direction first.",
+   "expect": "parity",
+   "args": {
+    "search": "turso"
+   }
+  },
+  {
+   "id": "text-two-terms",
+   "why": "Two terms become an OR of prefix-wildcarded quotes. Probes that both sides build the same MATCH and that BM25 ranks the multi-term hit the same way.",
+   "expect": "parity",
+   "args": {
+    "search": "memory architecture"
+   }
+  },
+  {
+   "id": "text-high-recall",
+   "why": "A term expected to match a large slice of the corpus, so the LIMIT bites and ranking — not filtering — decides the answer. This is the purest test of the composite score expression.",
+   "expect": "parity",
+   "args": {
+    "search": "muninn",
+    "n": 25
+   }
+  },
+  {
+   "id": "text-mixed-case",
+   "why": "FTS5 tokenizing is case-folding, but the escaper preserves the original case inside the quotes. Confirms neither side lower-cases before quoting.",
+   "expect": "parity",
+   "args": {
+    "search": "MCP Migration Stage"
+   }
+  },
+  {
+   "id": "text-long-phrase",
+   "why": "Six terms OR-ed. Probes term-count-dependent BM25 saturation and that neither side truncates or de-duplicates the term list.",
+   "expect": "parity",
+   "args": {
+    "search": "boot payload identity profile ops recent"
+   }
+  },
+  {
+   "id": "n-default",
+   "why": "n omitted entirely. Blue defaults to 10 in recall(); green defaults to 10 in buildSearch(). Two independently-written defaults that must not drift apart.",
+   "expect": "parity",
+   "args": {
+    "search": "bluesky"
+   }
+  },
+  {
+   "id": "n-one",
+   "why": "LIMIT 1 compares only the single best-ranked row. Intended as the sharpest test of the ranking expression — it instead caught blue being non-deterministic. Retained, because a query that cannot have a stable answer is worth keeping visible.",
+   "expect": "known-gap",
+   "args": {
+    "search": "bluesky",
+    "n": 1
+   },
+   "gap": "BLUE IS NON-DETERMINISTIC HERE, and green is not at fault. n=1 always returns fewer than expansion_threshold (3) rows, so memory.py::recall runs its multi-stage expansion; that loop iterates `for tag in stage1_tags` where stage1_tags is a SET of strings, and breaks early once len(results)+len(expansion_results) >= n*2. With n=1 the cap is 2, so the FIRST tag visited decides the whole answer — and set iteration order over strings is randomised per process by PEP 456 hash randomisation. Measured: recall('bluesky', n=1) returns 8df0ab0d, 889875b9 or 6edc2ff8 depending on PYTHONHASHSEED, and two full blue captures of this 64-query set differ on this entry alone. Green returns the top row by composite score, which is one of blue's possible answers. Do not 'fix' green to match a captured blue id: there is no id to match."
+  },
+  {
+   "id": "n-fifty",
+   "why": "At the tool layer's documented cap. Deep result sets expose ranking ties, where SQLite's ordering of equal composite_score rows is unspecified — if this is the ONLY flaky entry, suspect ties, not a port bug.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "n": 50
+   }
+  },
+  {
+   "id": "n-over-tool-cap",
+   "why": "n=200. turso.ts::search passes n straight to LIMIT, but tools.ts::recall clamps to 50 before calling it. The turso-layer comparison should match blue; green.mjs also records the tool-layer answer so the clamp is visible rather than silent.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "n": 200
+   }
+  },
+  {
+   "id": "n-zero",
+   "why": "LIMIT 0. Both sides should return nothing — but on blue an empty result then trips the expansion stage (0 < expansion_threshold), which re-searches and slices back to [:0]. Confirms expansion cannot resurrect rows past a zero limit.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "n": 0
+   }
+  },
+  {
+   "id": "type-decision",
+   "why": "Single type filter, the most common shape in references/CLAUDE.md. Binds `m.type = ?` as the second parameter on both sides.",
+   "expect": "parity",
+   "args": {
+    "search": "architecture",
+    "type": "decision"
+   }
+  },
+  {
+   "id": "type-procedure-no-search",
+   "why": "recall(type=..., tags=...) with NO search term — SKILL.md line 71. Blue routes this to _query (plain SELECT, ORDER BY t DESC), NOT to FTS5. Green has only the FTS path and will MATCH the literal '\"\"'. Two different queries against two different orderings.",
+   "expect": "known-gap",
+   "gap": "green has no non-FTS _query path; blue falls back to it whenever `search` is falsy",
+   "args": {
+    "type": "procedure",
+    "tags": [
+     "deployment"
+    ]
+   }
+  },
+  {
+   "id": "type-unknown-value",
+   "why": "A type outside state.TYPES. Neither side validates the filter value, so both should return zero rows — and on blue, zero rows then triggers expansion.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion; blue expands whenever len(results) < expansion_threshold",
+   "args": {
+    "search": "memory",
+    "type": "not-a-real-type"
+   }
+  },
+  {
+   "id": "type-empty-string",
+   "why": "type=\"\". Blue guards with `if type:` so an empty string is IGNORED; green guards with `type !== undefined` so it binds `m.type = ''` and matches nothing. A truthiness-vs-definedness divergence that no unit test would catch.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "type": ""
+   }
+  },
+  {
+   "id": "type-with-conf",
+   "why": "Two filters composed. Probes that the parameter ORDER (match, type, conf, limit) is identical — a swapped binding is silently wrong, not an error.",
+   "expect": "parity",
+   "args": {
+    "search": "decision",
+    "type": "decision",
+    "conf": 0.8
+   }
+  },
+  {
+   "id": "tags-single-any",
+   "why": "One tag, default tag_mode. Blue matches with `m.tags LIKE '%\"tag\"%' ESCAPE '\\'` over the raw JSON text; any port that reaches for json_each returns a different row set.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "mcp"
+    ]
+   }
+  },
+  {
+   "id": "tags-multi-any",
+   "why": "tag_mode any ORs the clauses inside ONE paren group. If the parens are dropped, the outer AND binds tighter than the OR and unrelated rows leak in.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "mcp",
+     "turso"
+    ],
+    "tag_mode": "any"
+   }
+  },
+  {
+   "id": "tags-multi-all",
+   "why": "tag_mode all. Blue appends each tag as its own TOP-LEVEL condition with no wrapping parens, asymmetric with `any`. Semantically identical, textually different — and the harness diffs SQL text upstream of this.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "mcp",
+     "turso"
+    ],
+    "tag_mode": "all"
+   }
+  },
+  {
+   "id": "tags-all-narrow",
+   "why": "A tag_mode=all pair chosen to be over-constrained, so it returns fewer than 3 rows and pushes blue into expansion while green stops. The intersection of `all` + sparse is where the two engines diverge hardest.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "release",
+    "tags": [
+     "correction",
+     "bsky"
+    ],
+    "tag_mode": "all"
+   }
+  },
+  {
+   "id": "tags-empty-list",
+   "why": "tags=[]. Blue guards `if tags:`, green guards `tags.length > 0`. Both must skip the clause entirely — an empty tag list must not become an empty paren group, which is a SQL syntax error.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": []
+   }
+  },
+  {
+   "id": "tags-case-mismatch",
+   "why": "HIGH VALUE. SQLite's LIKE is case-INSENSITIVE for ASCII; `value = ?` under json_each is case-SENSITIVE. Asking for 'Muninn' when the corpus stores 'muninn' returns rows under LIKE and nothing under json_each. This entry is the regression guard for that specific rewrite.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "Muninn"
+    ]
+   }
+  },
+  {
+   "id": "tags-like-metachar",
+   "why": "A tag containing '_', which is LIKE's single-character wildcard. Without ESCAPE and escapeLike(), 'boot_mode' also matches 'bootXmode'. Probes that both sides escape the pattern, not just quote it.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "boot_mode"
+    ]
+   }
+  },
+  {
+   "id": "tags-non-ascii",
+   "why": "A non-ASCII tag. Text LIKE compares the stored bytes, so it depends on whether the JSON was written with escaped \\uXXXX or literal UTF-8; json_each would decode first. Probes serialization assumptions, not retrieval.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags": [
+     "café"
+    ]
+   }
+  },
+  {
+   "id": "tags-all-sugar",
+   "why": "tags_all= convenience param (SKILL.md line 117). Blue resolves it to tags + tag_mode='all' BEFORE building SQL; green has no such sugar. The harness translates it so this probes the SQL, not the sugar — the sugar gap itself is an API-surface item for §8.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags_all": [
+     "correction",
+     "bsky"
+    ]
+   }
+  },
+  {
+   "id": "tags-any-sugar",
+   "why": "tags_any= convenience param (SKILL.md line 118). Same translation as above; asserts the two sugars land on the two different tag_modes and are not accidentally symmetric.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "tags_any": [
+     "therapy",
+     "self-improvement"
+    ]
+   }
+  },
+  {
+   "id": "conf-half",
+   "why": "THE NULL-CONFIDENCE PROBE. Blue emits a bare `m.confidence >= ?`, so a NULL-confidence row fails EVERY threshold. Any port that reuses the ranking expression's COALESCE(m.confidence, 0.5) in the FILTER admits every pre-confidence-era memory at exactly this threshold. 0.5 is where the bug is maximally visible.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "conf": 0.5
+   }
+  },
+  {
+   "id": "conf-zero",
+   "why": "conf=0. Blue guards `if conf is not None`, so 0 is APPLIED, and `NULL >= 0` is still NULL — so a conf=0 filter is not a no-op, it is a 'has a confidence value at all' filter. A truthiness guard would drop the clause and return more rows.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "conf": 0
+   }
+  },
+  {
+   "id": "conf-low",
+   "why": "Below the 0.5 coalesce default. Distinguishes 'filter ignores NULL' from 'filter coalesces NULL to 0.5': under COALESCE these rows pass, under blue they do not.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "conf": 0.3
+   }
+  },
+  {
+   "id": "conf-high",
+   "why": "Above the coalesce default, where the COALESCE bug is INVISIBLE — both spellings exclude NULLs. Included so a green failure on conf-half plus a green pass here localizes the bug to the coalesce rather than to the comparison.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "conf": 0.95
+   }
+  },
+  {
+   "id": "conf-one",
+   "why": "conf=1.0, the boundary. Probes >= vs > and float equality on the confidence column.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "conf": 1.0
+   }
+  },
+  {
+   "id": "conf-sparse",
+   "why": "A high threshold on a narrow term, engineered to fall under 3 results. Confidence filtering and expansion interact: blue's expansion stages re-pass `conf` but NOT `session_id`, an asymmetry worth watching.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "perch triage",
+    "conf": 0.9
+   }
+  },
+  {
+   "id": "since-only",
+   "why": "Lower time bound alone. Binds `m.t >= ?` — note it filters on `t` (narrative time), not created_at.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "since": "2026-01-01T00:00:00Z"
+   }
+  },
+  {
+   "id": "until-only",
+   "why": "Upper bound alone, inclusive. Confirms `<=` not `<`, and that the parameter lands after since's slot even when since is absent.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "until": "2026-06-01T00:00:00Z"
+   }
+  },
+  {
+   "id": "since-until-window",
+   "why": "Both bounds. Probes binding order (since before until) — a swap silently returns nothing for most windows, which reads as 'no data' rather than as a bug.",
+   "expect": "parity",
+   "args": {
+    "search": "memory",
+    "since": "2026-01-01T00:00:00Z",
+    "until": "2026-06-01T00:00:00Z"
+   }
+  },
+  {
+   "id": "since-until-inverted",
+   "why": "until < since — an empty window by construction. Guaranteed zero rows, so this is a cheap deterministic expansion trigger that does not depend on the corpus at all.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "memory",
+    "since": "2026-06-01T00:00:00Z",
+    "until": "2026-01-01T00:00:00Z"
+   }
+  },
+  {
+   "id": "since-with-offset",
+   "why": "HIGH VALUE. A timestamp with a +02:00 offset. Blue runs since/until through result.py::normalize_to_utc before binding; green binds the raw string. The DB stores Z-suffixed UTC, so green's comparison is a LEXICOGRAPHIC compare against a differently-formatted string — off by the offset, or matching nothing.",
+   "expect": "known-gap",
+   "gap": "green does not call normalize_to_utc on since/until",
+   "args": {
+    "search": "memory",
+    "since": "2026-01-01T00:00:00+02:00"
+   }
+  },
+  {
+   "id": "since-bare-date",
+   "why": "'2026-03-01' with no time and no zone — the shape SKILL.md line 113 actually documents. Blue normalizes it; green binds it bare, and '2026-03-01' < '2026-03-01T00:00:00Z' lexicographically, so the two windows differ at the boundary day.",
+   "expect": "known-gap",
+   "gap": "green does not call normalize_to_utc on since/until",
+   "args": {
+    "search": "memory",
+    "since": "2026-03-01"
+   }
+  },
+  {
+   "id": "session-id-scoped",
+   "why": "Session scoping (advanced-operations.md line 328). Binds `m.session_id = ?`. Sessions are narrow, so this usually also lands under the expansion threshold — read it together with its result count.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion; blue's expansion stages also DROP session_id, so blue can return cross-session rows here",
+   "args": {
+    "search": "memory",
+    "session_id": "muninn-mcp-stage1",
+    "n": 20
+   }
+  },
+  {
+   "id": "session-id-nonexistent",
+   "why": "A session that cannot exist. Deterministic zero-row filter, so it isolates expansion behaviour from corpus drift. On blue watch for rows coming back ANYWAY — the expansion stages do not re-pass session_id.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion; blue's expansion stages drop session_id and can leak other sessions' rows",
+   "args": {
+    "search": "memory",
+    "session_id": "no-such-session-000"
+   }
+  },
+  {
+   "id": "session-id-with-filters",
+   "why": "session_id composed with type and tags, to pin the full parameter binding order: match, type, tags..., conf, session_id, since, until, limit.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "boot",
+    "session_id": "muninn-mcp-stage1",
+    "type": "decision",
+    "tags": [
+     "mcp"
+    ]
+   }
+  },
+  {
+   "id": "episodic-true",
+   "why": "episodic=True adds `* (1.0 + ln(1.0 + COALESCE(m.access_count, 0)) * 0.2)` to the composite. THE ORDER-SENSITIVE PROBE: it is the only ranking input the harness itself perturbs, because reading is not free. Capture blue and green close together or this reorders under you.",
+   "expect": "parity",
+   "args": {
+    "search": "architecture decisions",
+    "episodic": true,
+    "n": 20
+   }
+  },
+  {
+   "id": "episodic-false-explicit",
+   "why": "episodic=False stated rather than defaulted. The non-episodic composite must contain no reference to access_count at all — a boost multiplied by ln(1+0)=0 is not the same as an absent boost if the column is NULL.",
+   "expect": "parity",
+   "args": {
+    "search": "architecture decisions",
+    "episodic": false,
+    "n": 20
+   }
+  },
+  {
+   "id": "episodic-sparse",
+   "why": "Episodic ranking on a query that returns under 3 rows: blue applies the access boost, then throws the ordering away and re-sorts by expansion boost_scores instead. Documents that expansion OVERRIDES episodic ranking on blue.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "cooccurrence pmi",
+    "episodic": true
+   }
+  },
+  {
+   "id": "sparse-nonsense-token",
+   "why": "A token that cannot appear in the corpus. Zero primary hits sends blue down the 'no stage1 tags' branch, which expands the QUERY WORDS via _cooccurrence_expand at min_pmi=0.0 and can return rows from nowhere. Green returns nothing. The single loudest expected divergence in the set.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "zzqqxx-not-a-word"
+   }
+  },
+  {
+   "id": "sparse-rare-compound",
+   "why": "Two rare-but-real terms. Expected 1-2 primary hits, which is the interesting case: blue KEEPS them and then appends expansion rows, so blue's list starts like green's and then continues. Diff should classify this as EXTRA, not SET-DIFF.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "hrana pipeline"
+   }
+  },
+  {
+   "id": "sparse-expansion-disabled",
+   "why": "THE CONTROL. Same sparse shape as sparse-rare-compound but expansion_threshold=0 disables blue's expansion entirely. This is the ONE sparse entry that must be exact parity today — if it fails, the divergence is in retrieval, not in the missing expansion stage.",
+   "expect": "parity",
+   "args": {
+    "search": "hrana pipeline",
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "sparse-expansion-raised",
+   "why": "expansion_threshold=10 on a query returning ~5 rows, so expansion fires where it normally would not. Confirms the threshold is a comparison against the PRIMARY result count, not against n.",
+   "expect": "known-gap",
+   "gap": "green has no multi-stage expansion",
+   "args": {
+    "search": "turso libsql client",
+    "expansion_threshold": 10
+   }
+  },
+  {
+   "id": "sparse-single-hit-disabled",
+   "why": "A near-unique term with expansion off. Isolates 'does green find the same one row' from 'does green invent the other nine', which the enabled variants conflate.",
+   "expect": "parity",
+   "args": {
+    "search": "zeitgeist",
+    "expansion_threshold": 0
+   }
+  },
+  {
+   "id": "empty-string",
+   "why": "search=\"\". Blue's `if search and not strict` is FALSY, so it never reaches FTS at all — it runs _query, a plain SELECT ordered by t DESC. Green escapes to the literal '\"\"' and runs it as a MATCH. Same call, two entirely different queries and two different orderings.",
+   "expect": "known-gap",
+   "gap": "green has no non-FTS _query path for falsy search",
+   "args": {
+    "search": ""
+   }
+  },
+  {
+   "id": "whitespace-only",
+   "why": "search=\"   \". Truthy in Python, so blue DOES reach FTS and escapes to '\"\"' — unlike empty-string above. The two adjacent entries pin exactly where blue's routing boundary sits.",
+   "expect": "parity",
+   "args": {
+    "search": "   "
+   }
+  },
+  {
+   "id": "tab-newline-only",
+   "why": "Whitespace that is not spaces. Python's str.split() with no argument splits on ALL whitespace; a port that splits on ' ' alone produces empty terms and a malformed MATCH.",
+   "expect": "parity",
+   "args": {
+    "search": "\t\n"
+   }
+  },
+  {
+   "id": "no-search-arg",
+   "why": "recall(n=50) with no search at all — SKILL.md line 215, a real and common shape. search defaults to None, so blue goes to _query with no text predicate: the newest 50 memories. Green has no such path.",
+   "expect": "known-gap",
+   "gap": "green has no non-FTS _query path; there is no MCP equivalent of 'just give me the newest N'",
+   "args": {
+    "n": 50
+   }
+  },
+  {
+   "id": "fts-embedded-quote",
+   "why": "A double quote inside the query. FTS5 special chars become SPACES, not escapes, so 'say \"hi\"' splits into two terms. Pinned by fts-golden.json vector 6 — this entry proves the vector survives contact with a real MATCH.",
+   "expect": "parity",
+   "args": {
+    "search": "say \"hi\" to turso"
+   }
+  },
+  {
+   "id": "fts-star-infix",
+   "why": "'a*b' becomes two terms, not the concatenation 'ab'. Replacing specials with '' instead of ' ' is the single most tempting simplification of the escaper and it changes results silently.",
+   "expect": "parity",
+   "args": {
+    "search": "mcp*server"
+   }
+  },
+  {
+   "id": "fts-all-specials",
+   "why": "Every FTS5 special char in one string: \" * ( ) : ^. Exercises the whole replacement table in one pass against a live MATCH rather than against a string assertion.",
+   "expect": "parity",
+   "args": {
+    "search": "x*y(z):w^v\"u"
+   }
+  },
+  {
+   "id": "fts-keyword-and",
+   "why": "'foo AND bar' — the operator must be STRIPPED, not honoured, or a user query can restructure the MATCH into an intersection. Both sides should search foo OR bar.",
+   "expect": "parity",
+   "args": {
+    "search": "turso AND memory"
+   }
+  },
+  {
+   "id": "fts-keyword-lowercase",
+   "why": "Keywords are compared UPPERCASED, so a lowercase 'and' is stripped too. Probes that the case-folding happens on the comparison and not on the emitted term.",
+   "expect": "parity",
+   "args": {
+    "search": "boot and profile or ops"
+   }
+  },
+  {
+   "id": "fts-only-keywords",
+   "why": "'AND OR NOT NEAR' strips to nothing, and an empty MATCH is an FTS5 SYNTAX ERROR — which is why both sides must emit the literal '\"\"'. If one side emits an empty string this is the entry that throws instead of returning rows.",
+   "expect": "parity",
+   "args": {
+    "search": "AND OR NOT NEAR"
+   }
+  },
+  {
+   "id": "fts-near-operator",
+   "why": "NEAR is stripped like the boolean operators, leaving a bare two-term OR. Included separately because NEAR takes a different argument shape in FTS5 and is easy to forget in the keyword set.",
+   "expect": "parity",
+   "args": {
+    "search": "NEAR boot payload"
+   }
+  },
+  {
+   "id": "fts-hyphen-and-unicode",
+   "why": "A hyphenated token and a non-ASCII token. Hyphen is NOT in the special set, so 'turso-libsql' stays one quoted term while the tokenizer may still split it — a place where escaping and tokenizing disagree.",
+   "expect": "parity",
+   "args": {
+    "search": "turso-libsql café 日本語"
+   }
+  },
+  {
+   "id": "mode-strict",
+   "why": "strict=True skips FTS and ranking entirely: blue runs `summary LIKE '%term%'` ordered by t DESC. Substring matching, not tokenized matching — 'call' matches 'recall'. Green has no strict mode.",
+   "expect": "known-gap",
+   "gap": "green implements no strict/LIKE path",
+   "args": {
+    "search": "recall",
+    "strict": true,
+    "n": 20
+   }
+  },
+  {
+   "id": "mode-fetch-all",
+   "why": "fetch_all=True is the documented way to get everything (SKILL.md line 110); blue nulls out search and falls to _query. Green has no equivalent, and adding one has a real tool-budget cost (§2) — this entry is the evidence for that decision.",
+   "expect": "known-gap",
+   "gap": "green implements no fetch_all path",
+   "args": {
+    "fetch_all": true,
+    "n": 30
+   }
+  },
+  {
+   "id": "mode-exploration",
+   "why": "exploration=True reranks CLIENT-SIDE in Python — 1/(1+access_count) added to an inverse-rank proxy — so it is the one ranking behaviour that is NOT server-side SQL and therefore not free to port. Expect a different order even once green's SQL matches.",
+   "expect": "known-gap",
+   "gap": "green implements no exploration rerank; unlike the rest of ranking this one is application code, not SQL",
+   "args": {
+    "search": "memory",
+    "exploration": true,
+    "n": 20
+   }
+  },
+  {
+   "id": "guard-wildcard-rejected",
+   "why": "recall(\"*\") RAISES ValueError on blue by design (SKILL.md line 121) to push callers to fetch_all. Green happily escapes '*' to '\"\"' and returns rows. An error-on-one-side-only case, and a reminder that parity includes parity of refusals.",
+   "expect": "known-gap",
+   "gap": "green does not implement blue's wildcard guard; it returns results where blue refuses",
+   "args": {
+    "search": "*"
+   }
+  }
+ ]
+}
