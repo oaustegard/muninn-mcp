@@ -14,7 +14,14 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { recall, memoryGet, muninnConfig, errorText, defaultDeps, type Config, type Deps } from "./tools.ts";
-import { defaultRegistry, pointerFor, registerDocLayer, type DocRegistry } from "./resources.ts";
+import {
+  defaultRegistry,
+  pointerFor,
+  registerBootResource,
+  registerDocLayer,
+  type DocRegistry,
+} from "./resources.ts";
+import { composeBoot, defaultBootDeps, type BootDeps } from "./boot.ts";
 
 export const SERVER_NAME = "muninn";
 export const SERVER_VERSION = "0.1.0";
@@ -28,6 +35,7 @@ export function buildServer(
   config: Config,
   deps: Deps = defaultDeps,
   registry: DocRegistry = defaultRegistry,
+  bootDeps: BootDeps = defaultBootDeps,
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -80,6 +88,7 @@ export function buildServer(
   // is a deliberate spend against §2's budget — §9 decision 14: it is a
   // three-line schema and it is what makes the design surface-independent.
   registerDocLayer(server, registry);
+  registerBootResource(server, config, bootDeps);
 
   server.registerTool(
     "recall",
@@ -185,6 +194,41 @@ export function buildServer(
     async (args) => {
       try {
         return { content: [{ type: "text" as const, text: await muninnConfig(config, args, deps) }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: errorText(err) }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // `boot` is the fifth and last tool, and the one with no arguments at all.
+  //
+  // §9 item 6 asked whether boot should be a tool or a resource; §8 answered
+  // both, and the reason the TOOL half cannot be dropped is that boot must fire
+  // automatically. Project instructions invoke it at the start of a session, and
+  // a resource is something a client offers a user to attach — MCP prompts have
+  // the same problem, which is why §8 rejected them for this. The resource
+  // (`muninn://boot`, registered in resources.ts) is the convenience; this is
+  // the contract.
+  //
+  // No pointer sentence here: there is no deferred reference for boot, and §8
+  // caveat 3's rule is that the pointer must resolve, not that every description
+  // must carry one.
+  server.registerTool(
+    "boot",
+    {
+      title: "Load the boot payload",
+      description:
+        "Load Muninn's identity, operating rules, pending tasks and recent " +
+        "context. Call once at the start of a session, before other memory tools.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      try {
+        return { content: [{ type: "text" as const, text: await composeBoot(config, bootDeps) }] };
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: errorText(err) }],
