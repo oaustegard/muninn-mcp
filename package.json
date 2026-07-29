@@ -16,6 +16,7 @@
     "harness:fts": "python3 harness/regen-fts-vectors.py"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.8.2",
     "@libsql/client": "^0.14.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.0.0"
