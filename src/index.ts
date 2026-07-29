@@ -11,9 +11,26 @@
  * — which here means simply not existing. Do not add a write tool to this
  * deployment until the parity harness is green on the production corpus.
  *
- * The OAuth'd entry for the claude.ai connector lands in a follow-up, copied
- * from sage-mcp's `mcp-oauth.ts` — that pattern is verified working against the
- * 2026-07-28 spec as of 2026-07-28, DCR deprecation notwithstanding.
+ * TWO ENTRY POINTS, ONE DISPATCH. This file is both a deployable Worker and the
+ * shared module that `mcp-oauth.ts` builds on — the same arrangement Sage uses.
+ * `mcpHandler` is the single place the MCP server is constructed; the two entries
+ * differ only in how they authenticate:
+ *
+ *   src/mcp-oauth.ts  OAuth 2.1 via @cloudflare/workers-oauth-provider. This is
+ *                     `main` in wrangler.toml, because claude.ai custom connectors
+ *                     require OAuth (§9 decision 2) and cannot present a bearer
+ *                     token at all.
+ *   src/index.ts      the `MCP_AUTH_TOKEN` bearer path below. Kept, not deleted:
+ *                     the parity harness is not a browser and cannot walk an
+ *                     auth-code flow, and neither can curl, `wrangler dev`, or any
+ *                     other programmatic client. Removing it would be a regression
+ *                     in exactly the surface Stage 1 is gated on.
+ *
+ * They are alternative deployments of the same server, never layered: under OAuth,
+ * `apiHandler` calls `mcpHandler` directly rather than this file's `fetch`, because
+ * the provider has already validated the access token and `checkAuth` would reject
+ * that token as a non-matching bearer. Deploy this variant to its own name/route
+ * (see wrangler.toml) if you want both live at once.
  */
 
 import { createMcpHandler } from "@modelcontextprotocol/server";
@@ -21,7 +38,11 @@ import { defaultDeps, type Config, type Deps } from "./tools.ts";
 import { buildServer } from "./server.ts";
 
 export interface Env extends Config {
-  /** Shared secret. Unset = open; acceptable only for a read-only branch DB. */
+  /**
+   * Shared secret for the bearer deployment of THIS file. Unset = open;
+   * acceptable only for a read-only branch DB. Unused by `mcp-oauth.ts`, where
+   * the OAuth provider is the gate.
+   */
   MCP_AUTH_TOKEN?: string;
 }
 

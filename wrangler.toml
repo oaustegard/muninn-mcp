@@ -1,11 +1,49 @@
 name = "muninn-mcp"
-main = "src/index.ts"
+
+# OAuth-protected entry — src/mcp-oauth.ts wraps the shared `mcpHandler` dispatch
+# with @cloudflare/workers-oauth-provider. This is `main` because claude.ai custom
+# connectors authenticate over OAuth 2.1 and cannot present a bearer token
+# (docs/mcp-migration.md §9 decision 2).
+#
+# src/index.ts remains BOTH the shared dispatch module that entry imports AND a
+# deployable bearer-token entry, which is what the parity harness and any other
+# programmatic client can actually use. To deploy that variant instead:
+#     wrangler deploy --name muninn-mcp-bearer src/index.ts
+# (or point `main` here at src/index.ts). Give it its own `--name` so the two can
+# coexist; they are alternative front doors to one server, not layers.
+main = "src/mcp-oauth.ts"
 compatibility_date = "2026-07-28"
 compatibility_flags = ["nodejs_compat"]
 
+# Token/grant store required by the OAuth provider. The id below is a PLACEHOLDER
+# and will not resolve — create the namespace and paste the real id in before the
+# first deploy:
+#     wrangler kv namespace create OAUTH_KV
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_ME_run_wrangler_kv_namespace_create_OAUTH_KV"
+
 # Secrets — set with `wrangler secret put`:
 #   TURSO_URL, TURSO_TOKEN   the memory database (Stage 1: a BRANCH, not production)
-#   MCP_AUTH_TOKEN           optional shared secret; unset = open
+#   MCP_LOGIN_PASSWORD       password for the OAuth sign-in page. REQUIRED by the
+#                            OAuth entry: unset or empty denies every login rather
+#                            than allowing any (see mcp-oauth.ts `passwordMatches`),
+#                            so a deploy that forgets it is dead, not open. Generate
+#                            it — there is no rate limiting in front of the page.
+#   MCP_AUTH_TOKEN           bearer secret, only for the src/index.ts deployment.
+#                            Unset = open there, which is why that variant belongs
+#                            on a branch DB or behind Cloudflare Access.
+#
+# §7 names Cloudflare Access as the mitigation for a public workers.dev login page
+# concentrating one person's memory credentials behind one password. Putting Access
+# in front of this Worker is still open (§9 decision 11) and is the recommended
+# hardening once the connector flow is verified working.
+#
+# Not enabled: `global_fetch_strictly_public`, which the provider library wants in
+# order to serve Client ID Metadata Documents — the successor to the Dynamic Client
+# Registration that 2026-07-28 deprecates. It changes fetch semantics worker-wide,
+# so it is a deliberate choice for whoever re-plans the DCR path, not a default
+# (see the header of src/mcp-oauth.ts).
 #
 # Stage 1 (docs/mcp-migration.md §5) runs green READ-ONLY against a Turso branch:
 #   turso db create muninn-green --from-db <production>
