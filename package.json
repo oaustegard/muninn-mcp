@@ -7,6 +7,7 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
+    "build:docs": "node scripts/build-docs.mjs",
     "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/tools.test.ts",
     "harness": "npm run harness:blue && npm run harness:green && npm run harness:diff",
     "harness:blue": "python3 harness/blue.py",
