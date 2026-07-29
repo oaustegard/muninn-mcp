@@ -7,7 +7,7 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/tools.test.ts"
+    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/tools.test.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",
