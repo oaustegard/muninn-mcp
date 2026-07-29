@@ -44,6 +44,13 @@ npm run harness:diff        # add -- --allow-known-gaps while the port is mid-fl
 between the two captures shows up as a mismatch that no code change will fix.
 `diff.mjs` prints the skew and warns above ten minutes.
 
+Back-to-back narrows the window for a *write* to land between the captures. It
+does **not** make deep-tail ordering reproducible — the composite score moves
+continuously with wall-clock time, and near-tied rows cross over inside a single
+capture run. See *Ranked order is not reproducible in the tail* below; that is
+what the `TIE` classification is for, and it is not something a faster capture
+fixes.
+
 ### Without credentials
 
 Three things work on any machine:
@@ -58,6 +65,16 @@ node --experimental-strip-types harness/green.mjs --dry-run   # translation + bo
 would bind, which is where swapped `since`/`until`, a `type: ""` that became a
 real predicate, or a tag pattern that lost its `ESCAPE` are all visible for free.
 
+```bash
+node harness/diff.mjs --self-test   # hand-rolled checks on the TIE logic
+```
+
+`--self-test` exercises the near-tie classifier against synthetic cases, half of
+which are reorderings it **must** refuse to excuse: a full reversal, an
+`ASC`→`DESC` green, a long-range move past a tied cluster, missing scores, a
+boost-ordered blue. The `TIE` class is the one part of this gate that can make a
+failure disappear, so "it stopped complaining" is not evidence — this is.
+
 `blue.py` and `green.mjs` both exit **2** with an explanatory message when
 credentials are missing. Neither crashes and neither writes a partial snapshot.
 
@@ -67,7 +84,10 @@ credentials are missing. Neither crashes and neither writes a partial snapshot.
   requirement. Not a set comparison: `bm25()` returns *negative* scores so the
   composite sorts `ASC`, and a reviewer "fixing" that to `DESC` produces a green
   that returns every right memory in the worst possible order. Order is the
-  assertion.
+  assertion — with one carve-out, argued in full below: the relative order of
+  rows whose composite scores are closer together than the score drifts between
+  captures is **not** asserted, because it is not a property either
+  implementation has.
 - **The FTS5 escaper still matches**, byte for byte, via `regen-fts-vectors.py`.
 - **Filter semantics**, across the corners that no unit test reaches: NULL
   confidence against a threshold, LIKE's case-insensitivity versus `json_each`'s
@@ -130,6 +150,63 @@ Two consequences for anyone reading this gate:
    before iterating would make blue reproducible and cost nothing.
 
 `n-one` is kept in the set, marked `known-gap`, precisely so this stays visible.
+
+**Ranked order is not reproducible in the tail, by either side, and the gate
+cannot assert it.** The composite score is a function of wall-clock time:
+
+```
+composite = bm25 × (1 + priority×0.3) × (1 + conf×0.15)
+                 × 1.0 / (1.0 + (julianday('now') - julianday(m.t)) × 0.01)
+```
+
+`julianday('now')` is evaluated server-side at query time, so every row's score
+drifts continuously. The factor is monotone in `t`, which invites the assumption
+that the *order* it induces is stable. It is not — the derivative depends on the
+row's age:
+
+```
+d/dt ln|composite| = -0.01 / (1 + 0.01 × age_days)
+```
+
+A one-day-old row decays at ~0.01/day; a 194-day-old one at ~0.0034/day. Rows of
+different ages converge and cross, forever. **Capturing closer together does not
+fix this.** Over the ~90–110 s a single blue capture takes, age advances by
+~0.00125 days, which for a 120-day-old row is a relative score change of
+`0.01 × 0.00125 / 2.2 ≈ 5.7e-06` — the same order of magnitude as the `4.2e-06`
+gap that decided the first real instance of it. **A near-tied pair can flip
+inside one capture run.** Blue cannot reproduce its own tail ordering across two
+runs any more than green can match blue's.
+
+This is a limitation of comparing ranked output from a decaying score. It is not
+a bug in blue, not a bug in green, and not something either could fix without
+changing the ranking itself — freezing `now` into a bound parameter would do it,
+but that changes what users get, not just what the gate sees.
+
+So the gate stops asserting it, narrowly. `diff.mjs` classifies a reordering as
+**`TIE`** — passing, not a regression — when the id *sets* agree and **every**
+pair of rows that changed places is closer in composite score than the score
+could have drifted in the capture window. Anything else stays `ORDER` and stays
+a regression. To make that judgeable rather than magical:
+
+- Both snapshots now record `composite_score` alongside each id. Blue's non-FTS
+  `_query` path (`strict`, `fetch_all`, falsy `search`) computes no composite at
+  all, so those records carry `null` and are **never** eligible for `TIE`.
+- The epsilon is derived from the decay rate (`0.01`/day, read out of the SQL)
+  times the capture window (computed from the snapshots' own `captured_at` and
+  `elapsed_s`) times the worst-case spread in decay rates. It is printed with
+  its derivation on every run. For a 400 s window it is ~4.6e-05 — roughly the
+  fifth significant figure.
+- `TIE` requires both score sequences to be **non-decreasing**, i.e. the
+  composite really is the sort key. Blue's expansion re-sorts by provenance
+  boost, so expansion results can never be excused as ties.
+- The near-tie section prints the actual gaps on both sides, so you can overrule
+  the verdict.
+
+What this **cannot** catch, and you should know it: a green whose composite is
+wrong by less than the epsilon and which only ever reorders rows that were
+already that close. No order comparison could catch that. Everything coarser —
+`ASC`→`DESC`, a dropped factor, `0.3` mistyped as `0.03`, a lost
+`is_superseded = 0` — moves scores by percent or more and still fails as `ORDER`.
 
 **It compares an access path, not a dataset.** There is one database. This
 harness cannot detect data corruption, only disagreement about how to read it.
@@ -214,7 +291,8 @@ FAIL tags-case-mismatch    MISSING   blue=  0 green=  7
 
 | Class | Cause to look for |
 |---|---|
-| `ORDER` | The ranking expression. Same rows, wrong sequence. |
+| `ORDER` | The ranking expression. Same rows, wrong sequence, **and not explained by score drift** — `diff.mjs` prints the pair and the separation that ruled a tie out. |
+| `TIE` | Nothing. Same rows, sequence differs only among rows too close in composite score to have a stable order. Passing; excluded from the regression count; printed in its own section with the gaps. |
 | `EXTRA+` | Blue's list continues past green's — the expansion signature. |
 | `EXTRA` | Green over-filters: an extra `WHERE`, or one that drops NULLs. |
 | `MISSING` | Green under-filters: a missing `WHERE`. `is_superseded = 0` is the classic. |

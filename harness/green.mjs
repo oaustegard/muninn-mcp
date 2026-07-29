@@ -76,6 +76,33 @@ function oneLine(s, limit = 400) {
 }
 
 /**
+ * Pull `composite_score` off a green row, or null if it is not a real number.
+ *
+ * Recorded for one reason only: `diff.mjs` needs it to tell a NEAR-TIE
+ * REORDERING apart from a ranking regression. The composite contains
+ * `julianday('now')`, and rows of different ages drift at different rates, so
+ * two rows whose scores agree to five decimal places can swap places between
+ * blue's capture and green's without either side being wrong. Ids alone cannot
+ * distinguish that from green ranking incorrectly. See the epsilon derivation
+ * in diff.mjs.
+ *
+ * The score is NOT compared across sides — it cannot be, it is a function of
+ * wall-clock time. Only the WITHIN-SIDE gap between two rows is used.
+ *
+ * Total by construction: never throws, never invents a number. libsql returns
+ * SQLite REAL as a JS number, but a null column, a bigint, or a driver change
+ * would all land here, and a fabricated 0 would be actively dangerous — the
+ * composite is negative (bm25() is), so 0 looks like a plausible score and
+ * could license a bogus TIE. null makes diff.mjs refuse to tie-analyse instead.
+ */
+function scoreOf(row) {
+  const v = row?.composite_score;
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "bigint" ? Number(v) : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Blue kwargs -> green SearchOpts.
  *
  * Returns { queryText, opts, unsupported[], notes[] }. Nothing here tries to
@@ -230,15 +257,26 @@ async function main() {
       rec = {
         id: q.id,
         ids: null,
+        scores: null,
         count: 0,
         error: `unsupported-in-green: ${unsupported.join("; ")}`,
       };
     } else {
       try {
         const rows = await search(client, String(queryText), opts);
-        rec = { id: q.id, ids: rows.map((r) => String(r.id)), count: rows.length, error: null };
+        // `scores` is parallel to `ids` — same length, same order — and kept as
+        // a separate array on purpose, so nothing that already reads `.ids`
+        // has to change. The sequence comparison is the gate; this is evidence
+        // hung beside it, not a new assertion.
+        rec = {
+          id: q.id,
+          ids: rows.map((r) => String(r.id)),
+          scores: rows.map(scoreOf),
+          count: rows.length,
+          error: null,
+        };
       } catch (e) {
-        rec = { id: q.id, ids: null, count: 0, error: `${e?.name ?? "Error"}: ${oneLine(e?.message ?? e)}` };
+        rec = { id: q.id, ids: null, scores: null, count: 0, error: `${e?.name ?? "Error"}: ${oneLine(e?.message ?? e)}` };
       }
     }
     rec.ms = Date.now() - t0;
@@ -271,9 +309,16 @@ async function main() {
 
     records.push(rec);
     const mark = rec.error ? "ERR " : "    ";
+    // Green has only the FTS path, which always SELECTs composite_score, so a
+    // null here is not an expected shape the way it is on blue — it means the
+    // driver or the SELECT changed, and the gate quietly lost its ability to
+    // recognise near-ties. Say so loudly at capture time.
+    const noScore = rec.ids?.length && rec.scores.some((s) => s === null)
+      ? "  !! some rows have no composite_score — green's SELECT should always compute one"
+      : "";
     console.log(
       `${mark}${q.id.padEnd(28)} n=${String(rec.count).padEnd(4)} ${String(rec.ms).padStart(5)}ms` +
-        (rec.error ? `  ${rec.error.slice(0, 80)}` : ""),
+        (rec.error ? `  ${rec.error.slice(0, 80)}` : "") + noScore,
     );
   }
 
