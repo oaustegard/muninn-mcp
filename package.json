@@ -1,0 +1,21 @@
+{
+  "name": "muninn-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote MCP server for Muninn's memory. Read-only, Stage 1.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/tools.test.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240000.0",
+    "wrangler": "^3.80.0"
+  }
+}

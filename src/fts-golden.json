@@ -1,0 +1,134 @@
+[
+ {
+  "in": "turso",
+  "out": "\"turso\"*"
+ },
+ {
+  "in": "agent wiki",
+  "out": "\"agent\"* OR \"wiki\"*"
+ },
+ {
+  "in": "  ",
+  "out": "\"\""
+ },
+ {
+  "in": "",
+  "out": "\"\""
+ },
+ {
+  "in": "turso-libsql",
+  "out": "\"turso-libsql\"*"
+ },
+ {
+  "in": "say \"hi\"",
+  "out": "\"say\"* OR \"hi\"*"
+ },
+ {
+  "in": "a*b",
+  "out": "\"a\"* OR \"b\"*"
+ },
+ {
+  "in": "(paren)",
+  "out": "\"paren\"*"
+ },
+ {
+  "in": "colon:here",
+  "out": "\"colon\"* OR \"here\"*"
+ },
+ {
+  "in": "caret^up",
+  "out": "\"caret\"* OR \"up\"*"
+ },
+ {
+  "in": "foo AND bar",
+  "out": "\"foo\"* OR \"bar\"*"
+ },
+ {
+  "in": "foo OR bar",
+  "out": "\"foo\"* OR \"bar\"*"
+ },
+ {
+  "in": "NOT this",
+  "out": "\"this\"*"
+ },
+ {
+  "in": "NEAR that",
+  "out": "\"that\"*"
+ },
+ {
+  "in": "and lowercase or",
+  "out": "\"lowercase\"*"
+ },
+ {
+  "in": "AND",
+  "out": "\"\""
+ },
+ {
+  "in": "AND OR NOT NEAR",
+  "out": "\"\""
+ },
+ {
+  "in": "MCP 2026-07-28",
+  "out": "\"MCP\"* OR \"2026-07-28\"*"
+ },
+ {
+  "in": "café",
+  "out": "\"café\"*"
+ },
+ {
+  "in": "日本語 memory",
+  "out": "\"日本語\"* OR \"memory\"*"
+ },
+ {
+  "in": "multi   spaces",
+  "out": "\"multi\"* OR \"spaces\"*"
+ },
+ {
+  "in": "trailing ",
+  "out": "\"trailing\"*"
+ },
+ {
+  "in": " leading",
+  "out": "\"leading\"*"
+ },
+ {
+  "in": "a",
+  "out": "\"a\"*"
+ },
+ {
+  "in": "x*y(z):w^v",
+  "out": "\"x\"* OR \"y\"* OR \"z\"* OR \"w\"* OR \"v\"*"
+ },
+ {
+  "in": "recall discipline",
+  "out": "\"recall\"* OR \"discipline\"*"
+ },
+ {
+  "in": "Muninn's memory",
+  "out": "\"Muninn's\"* OR \"memory\"*"
+ },
+ {
+  "in": "50% off",
+  "out": "\"50%\"* OR \"off\"*"
+ },
+ {
+  "in": "under_score",
+  "out": "\"under_score\"*"
+ },
+ {
+  "in": "back\\slash",
+  "out": "\"back\\slash\"*"
+ },
+ {
+  "in": "emoji 🐦 test",
+  "out": "\"emoji\"* OR \"🐦\"* OR \"test\"*"
+ },
+ {
+  "in": "tab\there",
+  "out": "\"tab\"* OR \"here\"*"
+ },
+ {
+  "in": "new\nline",
+  "out": "\"new\"* OR \"line\"*"
+ }
+]

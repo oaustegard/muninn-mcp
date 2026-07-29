@@ -1,0 +1,14 @@
+name = "muninn-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-07-28"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets — set with `wrangler secret put`:
+#   TURSO_URL, TURSO_TOKEN   the memory database (Stage 1: a BRANCH, not production)
+#   MCP_AUTH_TOKEN           optional shared secret; unset = open
+#
+# Stage 1 (docs/mcp-migration.md §5) runs green READ-ONLY against a Turso branch:
+#   turso db create muninn-green --from-db <production>
+# Point TURSO_URL at the branch until the parity harness is green, then Stage 2
+# promotes reads to the real database. Reads are idempotent, which is what makes
+# that the one genuinely free cutover in the plan.
