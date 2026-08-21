@@ -199,8 +199,22 @@ function load(name) {
 
 const spec = JSON.parse(readFileSync(join(HERE, "queries.json"), "utf-8"));
 const meta = new Map(spec.queries.map((q) => [q.id, q]));
-const blue = load("blue.json");
-const green = load("green.json");
+// The gate scores an ACCESS PATH, not a particular implementation, so which
+// file plays "green" is an argument rather than a constant. That is what lets a
+// candidate green — e.g. spike/fastmcp-python — be scored by this same gate
+// with no special-casing. `--blue=` is the symmetric case, for comparing two
+// captures of the same side to check the corpus held still.
+const argFile = (flag, dflt) => {
+  const hit = [...argv].find((a) => a.startsWith(`${flag}=`));
+  return hit ? hit.slice(flag.length + 1) : dflt;
+};
+const BLUE_FILE = argFile("--blue", "blue.json");
+const GREEN_FILE = argFile("--green", "green.json");
+const blue = load(BLUE_FILE);
+const green = load(GREEN_FILE);
+if (BLUE_FILE !== "blue.json" || GREEN_FILE !== "green.json") {
+  console.log(`  comparing: blue=${BLUE_FILE}  green=${GREEN_FILE}`);
+}
 const byId = (snap) => new Map(snap.records.map((r) => [r.id, r]));
 const B = byId(blue);
 const G = byId(green);
@@ -714,6 +728,29 @@ if (!MUT_KNOWN) {
  * means something other than the concurrent write also differed, and the entry
  * stays a regression.
  */
+/**
+ * Seconds between the two capture windows that NEITHER side observed.
+ *
+ * Each side probes for mutations since its OWN run start, so a write landing in
+ * the gap *between* the runs is invisible to both — which is the original bug's
+ * surviving form. The supersede that voided the first run happened DURING
+ * blue's capture and is caught; the same write thirty seconds later would not
+ * be, and would still read as a regression.
+ *
+ * This cannot be auto-excused: an unobserved window is an absence of evidence,
+ * not evidence of a mutation, and excusing failures on it would be exactly the
+ * laundering SKEW is careful not to do. So it is reported instead — a reader
+ * who sees unexplained failures alongside a non-zero blind spot knows to
+ * re-capture before debugging.
+ */
+function unobservedGapSeconds() {
+  const start = (x) => Date.parse(x.run_started_at ?? x.captured_at);
+  const end = (x) => Date.parse(x.captured_at);
+  if ([start(blue), end(blue), start(green), end(green)].some(Number.isNaN)) return null;
+  // Positive only when the windows are disjoint; overlapping runs have no blind spot.
+  return Math.max(0, Math.max(start(blue) - end(green), start(green) - end(blue))) / 1000;
+}
+
 function explainedByMutation(r, mutated, known) {
   if (!known) return false;
   const disputed = [...(r.missing ?? []), ...(r.extra ?? [])];
@@ -891,6 +928,17 @@ if (voided.length) {
         ` around it.`,
     );
   }
+}
+
+const blindSpot = unobservedGapSeconds();
+const unexplained = rows.filter((r) => r.surprise === "regression");
+if (blindSpot !== null && blindSpot > 0 && unexplained.length) {
+  warnings.push(
+    `${blindSpot.toFixed(0)}s between the two capture windows was observed by NEITHER side — ` +
+      `each probes only its own run. A write in that gap reads as a regression and no code ` +
+      `change will fix it. ${unexplained.length} unexplained failure(s) below; re-capture back ` +
+      `to back before debugging them.`,
+  );
 }
 
 const promote = rows.filter((r) => r.surprise === "gap-closed");
