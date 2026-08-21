@@ -587,6 +587,34 @@ function selfTest() {
     "length does not match",
   );
 
+  // --- SKEW: the second class that can stop a failure counting. Like TIE it
+  // gets adversarial cases, half of which it MUST refuse, because "it stopped
+  // complaining" is not evidence that it is right.
+  function checkMut(name, r, mutatedIds, known, want) {
+    const got = explainedByMutation(r, new Map(mutatedIds.map((i) => [i, {}])), known);
+    if (got === want) {
+      pass++;
+      console.log(`  ok    ${name}`);
+    } else {
+      fail++;
+      console.log(`  FAIL  ${name}`);
+      console.log(`        wanted ${want}, got ${got}`);
+    }
+  }
+
+  checkMut("all disputed ids mutated -> void",
+    { missing: ["a"], extra: ["b"] }, ["a", "b"], true, true);
+  checkMut("one disputed id NOT mutated -> stays a regression",
+    { missing: ["a"], extra: ["b"] }, ["a"], true, false);
+  checkMut("no disputed ids (a pure reorder) -> never void",
+    { missing: [], extra: [] }, ["a", "b"], true, false);
+  checkMut("snapshots carry no mutation data -> never void",
+    { missing: ["a"], extra: ["b"] }, ["a", "b"], false, false);
+  checkMut("green-only extras, all mutated -> void",
+    { extra: ["a", "b"] }, ["a", "b", "c"], true, true);
+  checkMut("blue-only missing, one unmutated -> stays a regression",
+    { missing: ["a", "z"] }, ["a"], true, false);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail === 0 ? 0 : 1;
 }
@@ -641,6 +669,58 @@ function classify(b, g) {
   return { cls: "SET-DIFF", ok: false, missing, extra };
 }
 
+// ----------------------------------------------------------- corpus mutation
+//
+// TIE and SKEW both make a failure stop counting as a regression, and they are
+// NOT the same claim — the distinction is the whole reason SKEW is separate:
+//
+//   TIE  the gate declines to assert an ordering the ranking does not have.
+//        The verdict PASSES. Re-running changes nothing.
+//   SKEW the corpus changed underneath the two captures, so the two sides were
+//        asked different questions. The verdict is VOID, not passing. The only
+//        remedy is to capture again; accepting it would be accepting a
+//        measurement we know to be invalid.
+//
+// This is provable rather than statistical: a row whose created_at/updated_at/
+// deleted_at lands inside the capture window is a fact the capture scripts
+// record. `supersede()` is the case that motivated it — it soft-deletes the
+// original WITHOUT bumping updated_at, so one supersede lands as a new row AND
+// removes an old one, shifting every LIMITed result set that contained either.
+// Thirteen entries, one write.
+
+const mutationsOf = (snap) => (Array.isArray(snap.corpus_mutations) ? snap.corpus_mutations : null);
+const blueMut = mutationsOf(blue);
+const greenMut = mutationsOf(green);
+const MUT_KNOWN = blueMut !== null || greenMut !== null;
+const MUTATED = new Map();
+for (const m of [...(blueMut ?? []), ...(greenMut ?? [])]) {
+  if (!MUTATED.has(m.id)) MUTATED.set(m.id, m);
+}
+if (!MUT_KNOWN) {
+  warnings.push(
+    "snapshots predate the corpus-mutation check (no `corpus_mutations` field) — " +
+      "a concurrent write during capture will read as a green regression. Re-capture both sides.",
+  );
+}
+
+/**
+ * True when EVERY id the two sides disagree about was mutated mid-capture.
+ *
+ * Pure, and takes its state as arguments rather than closing over `MUTATED` —
+ * `selfTest()` runs before those module consts initialise, so a closure here
+ * would be unreachable from the one place that proves this logic correct.
+ *
+ * "Every" is the whole safety property. One disputed id outside the mutated set
+ * means something other than the concurrent write also differed, and the entry
+ * stays a regression.
+ */
+function explainedByMutation(r, mutated, known) {
+  if (!known) return false;
+  const disputed = [...(r.missing ?? []), ...(r.extra ?? [])];
+  if (disputed.length === 0) return false;
+  return disputed.every((id) => mutated.has(id));
+}
+
 // --------------------------------------------------------------------- verdicts
 
 const rows = [];
@@ -649,6 +729,13 @@ for (const q of spec.queries) {
   const g = G.get(q.id);
   const r = classify(b, g);
   const known = q.expect === "known-gap";
+  // Void, not passing — see the SKEW note above. Only ever applied to an entry
+  // that already failed, and only when EVERY disputed id was mutated mid-run.
+  if (!r.ok && !known && explainedByMutation(r, MUTATED, MUT_KNOWN)) {
+    r.wasCls = r.cls;
+    r.cls = "SKEW";
+    r.void = true;
+  }
   rows.push({
     q,
     b,
@@ -657,7 +744,10 @@ for (const q of spec.queries) {
     known,
     // "Surprise" cuts both ways and both are worth a human's attention:
     // a parity entry that broke, and a known gap that quietly closed.
-    surprise: known && r.ok ? "gap-closed" : !known && !r.ok ? "regression" : null,
+    surprise: known && r.ok ? "gap-closed"
+      : r.void ? null
+      : !known && !r.ok ? "regression"
+      : null,
   });
 }
 
@@ -676,7 +766,8 @@ for (const r of rows) {
   // TIE gets its own tag rather than hiding under "ok": it PASSES, but it is
   // not the same claim as MATCH, and a reader scanning this table should see
   // that the gate declined to assert an ordering rather than verified one.
-  const tag = r.cls === "TIE" ? "tie " : r.ok ? "ok  " : r.known ? "GAP " : "FAIL";
+  const tag = r.cls === "TIE" ? "tie " : r.cls === "SKEW" ? "VOID"
+    : r.ok ? "ok  " : r.known ? "GAP " : "FAIL";
   console.log(
     `${tag} ${r.q.id.padEnd(W)} ${r.cls.padEnd(9)} ` +
       `blue=${String(r.b?.count ?? "-").padStart(3)} green=${String(r.g?.count ?? "-").padStart(3)}`,
@@ -687,7 +778,10 @@ const bad = rows.filter((r) => !r.ok);
 if (bad.length) {
   console.log("\n=== mismatch detail " + "=".repeat(48));
   for (const r of bad) {
-    console.log(`\n--- ${r.q.id}   [${r.cls}]${r.known ? "  (declared known-gap)" : "  ** REGRESSION **"}`);
+    const label = r.cls === "SKEW" ? "  ** VOID — corpus moved mid-capture **"
+      : r.known ? "  (declared known-gap)"
+      : "  ** REGRESSION **";
+    console.log(`\n--- ${r.q.id}   [${r.cls}]${label}`);
     console.log(`    why : ${r.q.why}`);
     if (r.known) console.log(`    gap : ${r.q.gap}`);
     console.log(`    args: ${JSON.stringify(r.q.args)}`);
@@ -769,12 +863,54 @@ if (toolDrift.length && !QUIET) {
   }
 }
 
+const voided = rows.filter((r) => r.cls === "SKEW");
+if (voided.length) {
+  console.log("\n=== VOID: the corpus changed during capture " + "=".repeat(25));
+  console.log("    These entries are NOT evidence about green. The two sides were asked");
+  console.log("    different questions because the corpus moved between them, so the");
+  console.log("    comparison has no verdict to give. Re-capture blue and green.");
+  console.log(`\n    ${MUTATED.size} row(s) changed inside the capture window:`);
+  for (const m of [...MUTATED.values()].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+    console.log(`        ${m.at}  ${String(m.id).slice(0, 8)}  ${m.kind}`);
+  }
+  console.log("");
+  for (const r of voided) {
+    const disputed = [...(r.missing ?? []), ...(r.extra ?? [])];
+    console.log(
+      `    ${r.q.id.padEnd(W)} was ${String(r.wasCls).padEnd(9)}` +
+        ` disputed: [${disputed.map((x) => String(x).slice(0, 8)).join(" ")}]`,
+    );
+  }
+  // A supersede writes one row and soft-deletes another, so it can shift every
+  // LIMITed result that contained either. One write, many entries: say so, or
+  // the count reads as a broad failure rather than a single event.
+  if (voided.length > 1) {
+    console.log(
+      `\n    ${voided.length} entries, ${MUTATED.size} mutated row(s) — a single write can` +
+        ` void many\n    entries at once, because it shifts every result set that was LIMITed` +
+        ` around it.`,
+    );
+  }
+}
+
 const promote = rows.filter((r) => r.surprise === "gap-closed");
 if (promote.length) {
   console.log("\n=== gaps that appear to have CLOSED " + "=".repeat(33));
   console.log("    These are marked known-gap in queries.json but matched. Verify, then");
   console.log("    promote them to expect:\"parity\" so they can never silently reopen.");
-  for (const r of promote) console.log(`    ${r.q.id}`);
+  // A gap that "closed" on an entry returning nothing on either side has not
+  // been shown to close — it has been shown to be untested that day. The README
+  // says to read the counts, not the verdicts; this makes that unmissable rather
+  // than a discipline the reader has to remember.
+  for (const r of promote) {
+    const empty = (r.b?.ids?.length ?? 0) === 0 && (r.g?.ids?.length ?? 0) === 0;
+    console.log(
+      `    ${r.q.id.padEnd(W)}` +
+        (empty
+          ? "  !! blue=0 green=0 — matches TRIVIALLY, proves nothing. Do NOT promote"
+          : `  blue=${r.b.ids.length} green=${r.g.ids.length}`),
+    );
+  }
 }
 
 if (warnings.length) {
@@ -800,6 +936,7 @@ const MEANING = {
   EXTRA: "blue returned rows green did not — green over-filters",
   MISSING: "green returned rows blue did not — green under-filters",
   "SET-DIFF": "rows differ both ways — filters first, then ranking",
+  SKEW: "VOID — corpus changed mid-capture; not evidence either way",
   "ERR-BLUE": "blue refused, green answered",
   "ERR-GREEN": "green failed, blue answered",
   COUNT: "ids agree, recorded count does not — capture bug",
@@ -817,9 +954,16 @@ console.log(
     `${ties.length} near-tie | ${regressions} regressions | ${gapFails} declared gaps still open`,
 );
 
-const fail = ALLOW_GAPS ? regressions > 0 : bad.length > 0;
+// A voided run must not report success. It is not a regression — but it is not
+// a pass either, and `--allow-known-gaps` must not launder it into one.
+const inconclusive = voided.length > 0;
+const fail = (ALLOW_GAPS ? regressions > 0 : bad.length > 0) || inconclusive;
 if (fail) {
   console.log(
+    (inconclusive && regressions === 0 && bad.length === voided.length
+      ? `\n  INCONCLUSIVE — ${voided.length} entr${voided.length === 1 ? "y" : "ies"} voided by a` +
+        ` mid-capture write; no regressions. Re-run the harness.`
+      : "") +
     `\n  FAIL — ${ALLOW_GAPS ? `${regressions} regression(s)` : `${bad.length} mismatch(es)`}` +
       (ALLOW_GAPS ? "" : gapFails ? `, of which ${gapFails} are declared known gaps` : ""),
   );

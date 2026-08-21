@@ -14,7 +14,7 @@ chains, `refs` provenance and `is_superseded` flags encode order.
 | Stage | | |
 |---|---|---|
 | 0 | write provenance (`source` column) | ✅ shipped, muninn-utilities #98 |
-| 1 | green read-only + parity harness | 🔨 this repo — gate at 58/64, 0 regressions |
+| 1 | green read-only + parity harness | 🔨 this repo — gate at 67/74, 0 regressions |
 | 2 | reads promoted to production | |
 | 3 | writes, shadowed | |
 | 4 | cutover | |
