@@ -12,3 +12,6 @@ dist/
 # Python bytecode from harness/*.py runs.
 __pycache__/
 *.pyc
+
+# spike venv / bytecode
+spike/**/__pycache__/

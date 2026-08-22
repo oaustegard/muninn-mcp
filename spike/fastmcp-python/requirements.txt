@@ -1,0 +1,9 @@
+# FastMCP 4 is BETA and pinned deliberately: the whole point of the spike is to
+# learn against a moving target, and an unpinned beta makes a re-run
+# uninterpretable. Bump on purpose, never incidentally.
+fastmcp==4.0.0b3
+
+# blue's own dependency. `remembering/scripts/__init__.py` imports it at module
+# load, so it is not optional — and it is the reason this must be a CONTAINER
+# rather than a Python Worker: `requests` is not available under Pyodide.
+requests>=2.31

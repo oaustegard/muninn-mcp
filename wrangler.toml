@@ -21,7 +21,7 @@ compatibility_flags = ["nodejs_compat"]
 #     wrangler kv namespace create OAUTH_KV
 [[kv_namespaces]]
 binding = "OAUTH_KV"
-id = "REPLACE_ME_run_wrangler_kv_namespace_create_OAUTH_KV"
+id = "55a30efa331a40b2a6f3633137865acd"
 
 # Secrets — set with `wrangler secret put`:
 #   TURSO_URL, TURSO_TOKEN   the memory database (Stage 1: a BRANCH, not production)

@@ -225,6 +225,48 @@ function dryRun(queries) {
   console.log(`${queries.length} queries, ${skipped} unsupported in green`);
 }
 
+
+/**
+ * Columns whose value moving means a row changed identity for retrieval.
+ * `deleted_at` is the one that matters most and the least obvious: blue's
+ * `supersede()` soft-deletes the original WITHOUT touching `updated_at`, so a
+ * watermark built only on created_at/updated_at misses exactly the mutation
+ * that reorders results.
+ */
+const MUTATION_COLUMNS = ["created_at", "updated_at", "deleted_at"];
+
+/**
+ * Ids of memories that changed at or after `sinceIso`.
+ *
+ * The gate diffs two captures of a LIVE corpus. A write landing between blue's
+ * first query and green's last makes the two sides answer different questions,
+ * and every affected entry reads as a green regression — which is how one
+ * `supersede()` can present as thirteen independent failures. Recording the
+ * mutated ids here lets diff.mjs prove that class apart without credentials.
+ *
+ * Timestamps are ISO-8601 UTC, so lexicographic comparison is chronological.
+ * Never throws: a capture must not fail because this diagnostic could not run.
+ */
+async function corpusMutations(client, sinceIso) {
+  const where = MUTATION_COLUMNS.map((c) => `${c} >= ?`).join(" OR ");
+  try {
+    const rs = await client.execute({
+      sql: `SELECT id, created_at, updated_at, deleted_at FROM memories WHERE ${where}`,
+      args: MUTATION_COLUMNS.map(() => sinceIso),
+    });
+    return rs.rows.map((r) => ({
+      id: String(r.id),
+      at: [r.created_at, r.updated_at, r.deleted_at].filter(Boolean).sort().pop(),
+      kind: String(r.created_at) >= sinceIso ? "created"
+          : String(r.deleted_at ?? "") >= sinceIso ? "deleted" : "updated",
+    }));
+  } catch (e) {
+    console.log(`!! could not read corpus mutations: ${String(e).slice(0, 120)}`);
+    return null;
+  }
+}
+
+
 async function main() {
   const spec = JSON.parse(readFileSync(QUERIES, "utf-8"));
   const queries = spec.queries;
@@ -253,6 +295,7 @@ async function main() {
   console.log(`green: ${queries.length} queries\n`);
 
   const records = [];
+  const runStarted = new Date().toISOString();
   const tStart = Date.now();
 
   for (const q of queries) {
@@ -343,6 +386,10 @@ async function main() {
     captured_at: new Date().toISOString(),
     elapsed_s: Math.round((Date.now() - tStart) / 100) / 10,
     query_count: records.length,
+    // Rows the corpus changed while this capture was running. diff.mjs uses
+    // these to tell "the corpus moved under us" apart from "green is wrong".
+    run_started_at: runStarted,
+    corpus_mutations: await corpusMutations(client, runStarted),
     records,
   };
   mkdirSync(dirname(OUT), { recursive: true });

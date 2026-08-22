@@ -17,7 +17,7 @@ paths*, never two datasets.
 
 | | |
 |---|---|
-| `queries.json` | The frozen golden set. 64 `recall` shapes, each with a `why`. |
+| `queries.json` | The frozen golden set. 74 `recall` shapes, each with a `why`. |
 | `blue.py` | Runs the set through the live Python → `snapshots/blue.json`. |
 | `green.mjs` | Runs it through `src/turso.ts` + `src/tools.ts` → `snapshots/green.json`. |
 | `diff.mjs` | The gate. Reads both snapshots, classifies, exits non-zero on mismatch. |
@@ -44,6 +44,46 @@ npm run harness:diff        # add -- --allow-known-gaps while the port is mid-fl
 between the two captures shows up as a mismatch that no code change will fix.
 `diff.mjs` prints the skew and warns above ten minutes.
 
+### A write during the captures voids the run — and one write can void many entries
+
+Twenty-four seconds of skew was enough. A live run produced **thirteen SET-DIFF
+regressions**, every one of which had the same shape: green returned a row blue
+never saw, and blue kept a row green had dropped. All thirteen were one event —
+a `supersede()` that landed at `03:48:43`, between blue's main body and green's
+run. It wrote a new memory and soft-deleted the one it replaced, so **every**
+result set that was `LIMIT`ed around either row shifted by one. Green was
+correct throughout; the measurement was not.
+
+Two things make this worth defending against rather than remembering:
+
+- **The skew warning does not catch it.** That warns above ten minutes. The
+  hazard is not how *long* the window is, it is whether anything *wrote* during
+  it, and a 24-second window was plenty.
+- **`supersede()` does not bump `updated_at`.** It sets `deleted_at` on the
+  original and inserts a replacement, so a watermark built on
+  `created_at`/`updated_at` alone misses exactly the mutation that reorders
+  results. `deleted_at` is in `MUTATION_COLUMNS` for that reason.
+
+So both capture scripts now record `corpus_mutations` — every id whose
+`created_at`, `updated_at` or `deleted_at` falls inside that side's run — and
+`diff.mjs` reclassifies a failure as **`SKEW`** when *every* disputed id is in
+that set. One disputed id outside it and the entry stays a regression.
+
+**`SKEW` is void, `TIE` is passing.** They are the only two classes that can stop
+a failure counting, and they make different claims. `TIE` says the gate declines
+to assert an ordering the ranking does not have — re-running changes nothing.
+`SKEW` says the comparison never happened — the run exits **non-zero** and prints
+`INCONCLUSIVE`, because accepting it would be accepting a measurement already
+known to be invalid. `--allow-known-gaps` does not launder it.
+
+Both are covered by `node harness/diff.mjs --self-test`, half of the `SKEW` cases
+being ones it must **refuse** — a partially-mutated disputed set, a pure reorder,
+and snapshots carrying no mutation data at all. As with `TIE`: "it stopped
+complaining" is not evidence.
+
+Snapshots captured before this existed have no `corpus_mutations` field;
+`diff.mjs` warns and reclassifies nothing.
+
 Back-to-back narrows the window for a *write* to land between the captures. It
 does **not** make deep-tail ordering reproducible — the composite score moves
 continuously with wall-clock time, and near-tied rows cross over inside a single
@@ -66,7 +106,7 @@ would bind, which is where swapped `since`/`until`, a `type: ""` that became a
 real predicate, or a tag pattern that lost its `ESCAPE` are all visible for free.
 
 ```bash
-node harness/diff.mjs --self-test   # hand-rolled checks on the TIE logic
+node harness/diff.mjs --self-test   # hand-rolled checks on the TIE and SKEW logic
 ```
 
 `--self-test` exercises the near-tie classifier against synthetic cases, half of
@@ -94,7 +134,7 @@ credentials are missing. Neither crashes and neither writes a partial snapshot.
   case-sensitivity, `_` as a LIKE wildcard inside a tag, `type: ""` under a
   truthiness guard versus a definedness guard.
 - **Where green is still missing behaviour**, named and enumerated rather than
-  discovered later — the 20 entries marked `known-gap`.
+  discovered later — the 9 entries marked `known-gap`.
 
 ## What it does NOT prove
 
@@ -271,11 +311,11 @@ proving nothing that day.
 
 ## The query set
 
-64 entries. Each has an `id` (stable — never renumber, snapshots key off it), a
+74 entries. Each has an `id` (stable — never renumber, snapshots key off it), a
 `why`, `args` in **blue's** kwarg vocabulary, and an `expect` of `parity` or
 `known-gap` (with a `gap` naming the missing green feature).
 
-44 `parity`, 20 `known-gap`.
+65 `parity`, 9 `known-gap`.
 
 | Group | n | Probes |
 |---|---|---|
@@ -312,6 +352,7 @@ FAIL tags-case-mismatch    MISSING   blue=  0 green=  7
 |---|---|
 | `ORDER` | The ranking expression. Same rows, wrong sequence, **and not explained by score drift** — `diff.mjs` prints the pair and the separation that ruled a tie out. |
 | `TIE` | Nothing. Same rows, sequence differs only among rows too close in composite score to have a stable order. Passing; excluded from the regression count; printed in its own section with the gaps. |
+| `SKEW` | Nothing *about green*. Every id the two sides disagree about was written, updated or soft-deleted **while the captures were running**. **Void, not passing** — the run exits non-zero and the only remedy is to capture again. |
 | `EXTRA+` | Blue's list continues past green's — the expansion signature. |
 | `EXTRA` | Green over-filters: an extra `WHERE`, or one that drops NULLs. |
 | `MISSING` | Green under-filters: a missing `WHERE`. `is_superseded = 0` is the classic. |
@@ -323,7 +364,9 @@ FAIL tags-case-mismatch    MISSING   blue=  0 green=  7
 
 `diff.mjs` also reports **gaps that appear to have closed**: entries marked
 `known-gap` that now match. Verify and promote them to `expect: "parity"`, or
-they can silently reopen.
+they can silently reopen. An entry matching at `blue=0 green=0` is flagged
+`matches TRIVIALLY` and must **not** be promoted — a gap that closed on a query
+returning nothing has not been shown to close, only to be untested that day.
 
 And it reports **tool-layer drift**, green against green: `tools.ts::recall`
 clamps `n` with `Math.min(Math.max(Number(n) || 10, 1), 50)`, so `n=200` becomes

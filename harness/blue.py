@@ -116,6 +116,49 @@ SCRIPTS = Path(os.environ.get("MUNINN_SCRIPTS", DEFAULT_SCRIPTS)).resolve()
 RESERVED = ("raw", "auto_strengthen")
 
 
+# ---------------------------------------------------------------- corpus drift
+
+#: Columns whose value moving means a row changed identity for retrieval
+#: purposes. `deleted_at` is the one that matters most and the least obvious:
+#: `supersede()` soft-deletes the original WITHOUT touching `updated_at`, so a
+#: watermark built only on created_at/updated_at misses exactly the mutation
+#: that reorders results.
+MUTATION_COLUMNS = ("created_at", "updated_at", "deleted_at")
+
+
+def corpus_mutations(turso, since_iso: str) -> list:
+    """Ids of memories that changed at or after `since_iso`.
+
+    The gate diffs two captures of a LIVE corpus. If anything writes between
+    blue's first query and green's last, the two sides answer different
+    questions and every affected entry reads as a green regression — which is
+    how a single `supersede()` can present as thirteen independent failures.
+
+    Recording the mutated ids at capture time lets `diff.mjs` prove that class
+    apart from a real one without needing credentials of its own.
+
+    Timestamps are ISO-8601 UTC with a `Z` suffix, so lexicographic comparison
+    is chronological.
+    """
+    where = " OR ".join(f"{c} >= ?" for c in MUTATION_COLUMNS)
+    try:
+        rows = turso._exec(
+            f"SELECT id, created_at, updated_at, deleted_at FROM memories WHERE {where}",
+            [since_iso] * len(MUTATION_COLUMNS),
+        )
+    except Exception as e:                                  # never fail a capture
+        print(f"!! could not read corpus mutations: {str(e)[:120]}")
+        return None
+    return [
+        {"id": r["id"],
+         "at": max(x for x in (r["created_at"], r["updated_at"], r["deleted_at"]) if x),
+         "kind": "created" if r["created_at"] >= since_iso
+                 else "deleted" if (r["deleted_at"] or "") >= since_iso
+                 else "updated"}
+        for r in rows
+    ]
+
+
 def load_blue():
     """Import blue as a package.
 
@@ -254,6 +297,7 @@ def main():
 
     records = []
     t_start = time.time()
+    run_start = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     for q in queries:
         args = dict(q["args"])
         for r in RESERVED:
@@ -303,6 +347,10 @@ def main():
         "access_tracking_suppressed": track is not None,
         "access_bumps_suppressed": track["n"] if track else None,
         "query_count": len(records),
+        # Rows the corpus changed while this capture was running. diff.mjs uses
+        # these to tell "the corpus moved under us" apart from "green is wrong".
+        "run_started_at": run_start,
+        "corpus_mutations": corpus_mutations(turso, run_start),
         "records": records,
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
