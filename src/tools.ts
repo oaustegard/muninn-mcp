@@ -22,6 +22,7 @@ import { recallWithExpansion } from "./expansion.ts";
 import {
   configGet,
   configList,
+  findReplacement,
   getAlternatives,
   getChain,
   getMemory,
@@ -252,6 +253,8 @@ export interface MemoryGetArgs {
   id: string;
   mode?: MemoryGetMode;
   depth?: number;
+  /** Internal: set when following a replacement, so lineage is followed once. */
+  _followed?: boolean;
 }
 
 /**
@@ -278,6 +281,14 @@ export async function memoryGet(
   if (!id) return "memory_get: an `id` is required (full uuid or unique prefix).";
   const mode: MemoryGetMode = args.mode ?? "get";
 
+  const notFound = async (text: string): Promise<string> => {
+    const hit = await findReplacement(client, id);
+    if (!hit || args._followed) return text;
+    const next = await memoryGet(config, { ...args, id: hit.current, _followed: true }, deps);
+    return `'${id}' was superseded; ${hit.retired.slice(0, 8)} -> ${hit.current}. ` +
+      `Showing the current memory.\n${next}`;
+  };
+
   try {
     if (mode === "chain") {
       // Args arrive as JSON, so coerce before blue's min(depth, 10) — a NaN cap
@@ -285,17 +296,27 @@ export async function memoryGet(
       const raw = Number(args.depth);
       const requested = Number.isFinite(raw) ? raw : 3;
       const cap = Math.min(requested, MAX_CHAIN_DEPTH);
-      return formatChain(await getChain(client, id, requested), id, cap);
+      const chain = await getChain(client, id, requested);
+      const text = formatChain(chain, id, cap);
+      return chain.length ? text : await notFound(text);
     }
     if (mode === "alternatives") {
-      return formatAlternatives(await getAlternatives(client, id), id);
+      const items = await getAlternatives(client, id);
+      const text = formatAlternatives(items, id);
+      return items === null ? await notFound(text) : text;
     }
     const memory = await getMemory(client, id);
     return memory === null
-      ? `No active memory found with id '${id}'.`
+      ? await notFound(`No active memory found with id '${id}'.`)
       : formatMemory(memory);
   } catch (err) {
-    if (err instanceof MemoryIdError) return err.message;
+    if (err instanceof MemoryIdError) {
+      // An unknown prefix may name a retired memory; an ambiguous one never
+      // reaches here as "No active memory found".
+      return err.message.startsWith("No active memory found")
+        ? await notFound(err.message)
+        : err.message;
+    }
     throw err;
   }
 }

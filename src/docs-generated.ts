@@ -13,14 +13,15 @@
 import type { DocTopic, DocProvenance } from "./docs.ts";
 
 export const GENERATED_FROM: DocProvenance = {
-  commit: "64fefda379018c073e378bd6be50d289655a45f1",
-  generatedAt: "2026-07-29T01:57:36.173Z",
+  commit: "683f6a2da0ba2fbb27942e06c04388aac410d30c",
+  generatedAt: "2026-09-17T12:38:28.864Z",
   sources: [
     "manifests/blog-publish/muninn-blog-publish.v0.4.json",
     "manifests/boot-ledger/muninn-boot-ledger.v0.4.json",
     "manifests/bsky-card/muninn-bsky-card.v0.4.json",
     "manifests/bsky-limit/muninn-bsky-limit.v0.4.json",
     "manifests/correction-gate/muninn-correction-gate.v0.4.json",
+    "manifests/hypothetical-classifier/muninn-hypothetical-classifier.v0.3.json",
     "manifests/issue-close/muninn-issue-close.v0.4.json",
     "manifests/memory-tfidf/muninn-memory-tfidf.v0.4.json",
     "manifests/news-watch/muninn-news-watch.v0.4.json",
@@ -29,7 +30,9 @@ export const GENERATED_FROM: DocProvenance = {
     "manifests/recall-sufficiency/muninn-recall-sufficiency.v0.4.json",
     "manifests/remind/muninn-remind.v0.4.json",
     "manifests/satisfaction-skew/muninn-satisfaction-skew.v0.4.json",
+    "manifests/serendipity/muninn-serendipity.v0.4.json",
     "manifests/task-policy/muninn-task-policy.v0.4.json",
+    "manifests/verdict/muninn-verdict.v0.4.json",
     "manifests/verify-patch/muninn-verify-patch.v0.4.json",
     "manifests/whtwnd/muninn-whtwnd.v0.4.json",
     "manifests/zeitgeist-delta/muninn-zeitgeist-delta.v0.4.json",
@@ -280,7 +283,7 @@ check before assuming the corpus is empty.
 \`MemoryResult\` validates attribute and key access against this set; anything
 else raises rather than returning \`None\`.
 
-\`access_count\`, \`alternatives\`, \`bm25_score\`, \`composite_rank\`, \`composite_score\`, \`confidence\`, \`created_at\`, \`deleted_at\`, \`has_full\`, \`id\`, \`last_accessed\`, \`priority\`, \`refs\`, \`relative_age\`, \`session_id\`, \`summary\`, \`summary_preview\`, \`t\`, \`tags\`, \`type\`, \`updated_at\`, \`valid_from\`
+\`access_count\`, \`alternatives\`, \`bm25_score\`, \`composite_rank\`, \`composite_score\`, \`confidence\`, \`created_at\`, \`deleted_at\`, \`has_full\`, \`id\`, \`last_accessed\`, \`priority\`, \`refs\`, \`relative_age\`, \`session_id\`, \`summary\`, \`summary_preview\`, \`superseded_by\`, \`t\`, \`tags\`, \`type\`, \`updated_at\`, \`valid_from\`
 
 Common aliases (\`content\` → \`summary\`, \`conf\` → \`confidence\`, \`timestamp\` → \`t\`)
 resolve transparently. Full alias table: \`muninn://reference/recall\`.
@@ -396,7 +399,7 @@ export const UTILITY_INDEX: DocTopic = {
   topic: "utilities",
   uri: "muninn://utilities",
   title: "Utility index",
-  description: "Routing index for 21 Muninn utilities: which one handles which task shape.",
+  description: "Routing index for 31 Muninn utilities: which one handles which task shape.",
   mimeType: "text/markdown",
   text: `# Utility index
 
@@ -411,15 +414,18 @@ until a task matches one of these shapes.
 - **\`bsky_card\`** — Posting any link to Bluesky via API with a proper card preview (blog posts, tools, apps, dashboards, etc.) → \`muninn://utilities/bsky_card\`
 - **\`bsky_limit\`** — Posting to Bluesky and need to verify/enforce the 300-grapheme limit. len() lies on emoji and combining marks. → \`muninn://utilities/bsky_limit\`
 - **\`correction_gate\`** — A therapy correction is about to become boot-loaded context (new desire-trigger, ops entry). Held-in + held-out regression gate: does the correction catch the failure that motivated it, and does it regress nothing else (a trigger firing on an unrelated past input, boot bloat)? Gates only the three measurable slices — trigger-firing, recall precision, reindex; voice/relevance stay hand-evolved. Auto-runs from set_rule. → \`muninn://utilities/correction_gate\`
+- **\`hypothetical_classifier\`** — Assigning items to a CLOSED label vocabulary too large to ship in a prompt (provider enum caps, or per-call token cost at volume) — product/query taxonomies, tag vocabularies, category hierarchies. A cheap LLM writes the label the vocabulary would use and an embedder snaps it onto the nearest legal one, so the schema is never transmitted. NOT for a vocabulary that fits in a prompt: structured output measured 14 points more accurate there (0.701 vs 0.564 on WANDS). Prompt on the vocabulary's REGISTER, never on novelty — the novelty wording cost 30 points on Muninn's own tag corpus and collapsed a Haiku subagent to a fifth of the no-model baseline. Long documents want direct_union=True. → \`muninn://utilities/hypothetical_classifier\`
 - **\`issue_close\`** — Closing a GitHub issue and capturing the behavioral lesson learned. Optionally tags the synthesis memory as a pending test for the next session. → \`muninn://utilities/issue_close\`
 - **\`memory_tfidf\`** — therapy Phase 1 duplicate detection, Phase 2 structural pattern matching, memory deduplication, finding related memories across domains → \`muninn://utilities/memory_tfidf\`
 - **\`news_watch\`** — Watch claude.com/blog for new posts during Daily Perch. Pure parsing + watermark state; HTTP fetching is delegated to the caller's web_fetch tool (claude.com WAFs raw container egress). → \`muninn://utilities/news_watch\`
 - **\`perch_publish\`** — Publishing flight log discussions to the public perch section of muninn.austegard.com. → \`muninn://utilities/perch_publish\`
-- **\`perch_triage\`** — Dream review, morning check-in, or any flight log processing. → \`muninn://utilities/perch_triage\`
+- **\`perch_triage\`** — Dream review, morning check-in, or any flight log processing. pending_comments() lists flight logs where Oskar commented and Muninn has not replied; reply() posts with the marker that clears them. → \`muninn://utilities/perch_triage\`
 - **\`recall_sufficiency\`** — Iterative recall that keeps searching until the answer is sufficient: recall -> judge coverage -> name the gap and re-search for it -> repeat. For autonomous/programmatic runs or cross-corpus retrieval where bailing at 'not found' is wrong; on a single rich KB plain recall() plus judgement is lighter. → \`muninn://utilities/recall_sufficiency\`
 - **\`remind\`** — Oskar says "remind me", "don't let me forget", scheduling future reminders, checking/managing existing reminders. → \`muninn://utilities/remind\`
 - **\`satisfaction_skew\`** — Auditing the failure:success storage skew — how many correction-tagged entries there are per satisfaction-analog, its monthly trend, and the shape distribution of registered analogs. Reach for it when re-evaluating the satisfaction-register (is it under-firing? is a 4th shape emerging?) or answering Weng-style questions about approach- vs avoidance-orientation in the corpus. Read-only measurement, never fires a trigger. → \`muninn://utilities/satisfaction_skew\`
+- **\`serendipity\`** — Manufacturing encounters between unconnected memories — structured serendipity. Reach for it during therapy (between cleanup and summarize), on fly/perch commands, or any time the store needs a surface for curiosity rather than another correction. Three strategies: rhyme (same structure, different domain, via memory_tfidf), tags (2+ uncommon tags in common), temporal (same session, never linked). Excludes pairs already joined by refs, near-duplicates, and confidential rows. Read-only — it finds candidates; the refs/supersede/discard/flag verdict stays yours. → \`muninn://utilities/serendipity\`
 - **\`task_policy\`** — Load the live policy for a perch autonomous task. Reads the {task}-command ops entry, recent preference memories, and the most recent real run, so task prompts route to fresh policy rather than hardcoded behavior. → \`muninn://utilities/task_policy\`
+- **\`verdict\`** — Persist a challenge() verdict together with the fingerprint that dates it — judge, profile, and a content hash of the criterion prose — so a rewritten rubric turns staleness into a query instead of a guess. → \`muninn://utilities/verdict\`
 - **\`verify_patch\`** — PR creation, code review, verifying handoff specs, any time a diff needs vetting → \`muninn://utilities/verify_patch\`
 - **\`whtwnd\`** — Publish, update, delete, and list WhiteWind blog entries via ATProto. Posts land in the user's PDS as \`com.whtwnd.blog.entry\` records and federate to the WhiteWind AppView. → \`muninn://utilities/whtwnd\`
 - **\`zeitgeist_delta\`** — Running a zeitgeist and about to store the result. Prevents near-identical coverage of running stories (Iran/Hormuz, Norway F-16s) from bloating memory. → \`muninn://utilities/zeitgeist_delta\`
@@ -429,10 +435,17 @@ until a task matches one of these shapes.
 No install manifest upstream, so there is no generated page. The line below is
 all the routing information there is; the utility's own module documents the rest.
 
+- **\`bsky_list\`** — Building or editing a Bluesky list: turning a starter pack, an existing list, or an actor's followers/follows into a curatelist, modlist or referencelist in a repo; adding or removing members; deleting a list without orphaning its listitems. The write half that browsing-bluesky and atprotoing never had — both read lists, neither can build one. Writes as Muninn by default; writing to Oskar's repo needs an explicit as_oskar. Reads for dedupe and removal go to the owning repo, not the AppView, which lags writes by seconds.
 - **\`bsky_moderation\`** — Moderating a Bluesky thread's repliers in bulk: extract DIDs+text of everyone who replied to a post (extract_thread_repliers, context-lean), classify them, then mute/block the matching accounts (moderate, bounded-parallel, dry_run-default). Two-stage: extraction + authed action, classification is the caller's job.
+- **\`capability_model\`** — Handing a subagent (or any restricted caller) a slice of the Muninn API. Stable capability ids -> callables, each declaring what environment it needs and whether it writes; expand(ids, allow_writes=False) raises rather than filtering. Use instead of hand-copying functions into a reduced module.
 - **\`flowing\`** — You have 3+ sequential tool calls where the workflow shape is known upfront. Also when pipelines need checkpoint resume (fix step N, resume without re-running steps 1 to N-1), or when side-effects (memory storage, notifications) should not block the main pipeline.
+- **\`gemini_mini_muninn\`** — Extraction or classification at volume over a memory slice main-Muninn has already scoped. Ships the slice to Gemini, returns schema-validated findings/contradictions/gaps/recommended_writes. NOT for causal, temporal or adversarial questions (what's stale, what contradicts what) — use a native subagent via mini_muninn for those.
 - **\`github_rw\`** — Branch-aware GitHub writes from a spoke / career-search / any-repo workflow: commit a file to a branch, create a branch, open a PR, check live PR state. The write companion to gh_status; stops hand-rolling urllib contents-PUT + pulls boilerplate.
-- **\`survey\`** — Seeing the WHOLE memory corpus at some resolution rather than searching it: what a period was about, how storage volume shifted over months, where the gaps are. The divergent counterpart to recall(). Fixed line budget, verbatim at the recent end, extractively collapsed with age.`,
+- **\`log_extract\`** — Cutting a long command log down to the part that diagnoses a failure, without a model and without paraphrase. Anchors on error signatures (traceback, FAILED, [ERROR], panic, rustc/tsc error:), keeps those regions byte-for-byte, collapses dependency stack frames, repeated lines and progress/reactor noise, and replaces everything dropped with a count and a line range so the original file stays addressable. Use instead of head/tail whenever the failure is not at a known position — build tools print the error and then hundreds of lines of epilogue. run_gate calls this on red.
+- **\`mini_muninn\`** — Spawning a native subagent that needs to read the memory corpus. Read-only CLI (recall/batch/get/chain/ops/ops-list/spokes) generated from the capability model — writes are absent from the process, not merely discouraged. Subagent proposes writes in its report; main-Muninn performs them.
+- **\`run_gate\`** — Running a repo's tests, lint or build from a session — the pre-push gate, a smoke run, any command whose passing output is hundreds of lines that say nothing. Prints one line per stage that exits 0 and the full capture for one that does not, so a green suite costs ~10 tokens and a red one costs what it needs. Names exit 127 and empty-output failures rather than letting an empty capture read as a result. CLI: python3 -m muninn_utils.run_gate --stage lint 'ruff check .' --stage unit 'pytest -q'
+- **\`survey\`** — Seeing the WHOLE memory corpus at some resolution rather than searching it: what a period was about, how storage volume shifted over months, where the gaps are. The divergent counterpart to recall(). Fixed line budget, verbatim at the recent end, extractively collapsed with age.
+- **\`validate_fields\`** — About to read fields off recall() results — especially after to_dict()/copy(), where a wrong field name returns the default silently instead of raising.`,
 };
 
 export const UTILITY_DOCS: Record<string, string> = {
@@ -563,6 +576,15 @@ Module: \`muninn_utils.correction_gate\` · CLI: \`python -m muninn_utils.correc
 \`\`\`
 gate_config_correction('recall-triggers','ops', old_json, new_json, motivating=Case(...))
 \`\`\``,
+  "hypothetical_classifier": `# hypothetical_classifier
+
+**Muninn hypothetical_classifier** — Classify items into a closed label vocabulary too large to ship in a prompt: a cheap LLM invents a free-form label, an embedder snaps the invention onto the nearest legal one.
+
+Module: \`muninn_utils.hypothetical_classifier\` · CLI: \`python -m muninn_utils.hypothetical_classifier\`
+
+Env: \`CF_ACCOUNT_ID\`, \`CF_GATEWAY_ID\`, \`CF_API_TOKEN\` (secret) (\`?\` = optional)
+
+## Actions`,
   "issue_close": `# issue_close
 
 **Muninn issue_close** — Close a GitHub issue with a learning synthesis. Posts the synthesis as a closing comment, then writes it as a \`decision\` memory tagged with the issue number — encoded as a flowing DAG so the close ack returns the moment GitHub returns 2xx, while the memory write happens detached.
@@ -689,7 +711,7 @@ publish_flight_log number=430
 \`\`\``,
   "perch_triage": `# perch_triage
 
-**Muninn perch_triage** — Triage open Perch flight-log discussions by reaction signal. Groups them into action buckets (auto-close, discuss, file-issue, hold, correct, nag). Optional auto-close path executes the THUMBS_UP/LAUGH bucket.
+**Muninn perch_triage** — Triage open Perch flight-log discussions by Oskar's comments and reaction signals. Unanswered comments outrank reactions and block auto-close; the rest group into action buckets (auto-close, discuss, file-issue, hold, correct, nag). Optional auto-close path executes the THUMBS_UP/LAUGH bucket.
 
 Module: \`muninn_utils.perch_triage\` · CLI: \`python -m muninn_utils.perch_triage\`
 
@@ -829,6 +851,24 @@ Module: \`muninn_utils.satisfaction_skew\` · CLI: \`python -m muninn_utils.sati
 \`\`\`
 measure_skew()  # or measure_skew(memories=[{'tags': ['correction'], 'created_at': '2026-06-01'}, ...])
 \`\`\``,
+  "serendipity": `# serendipity
+
+**Muninn serendipity** — Generate candidate connections between unconnected memories — structural rhymes across domains, pairs sharing uncommon tags, and same-session neighbours that were never linked.
+
+Module: \`muninn_utils.serendipity\` · CLI: \`python -m muninn_utils.serendipity\`
+
+## Actions
+
+### \`serendipity\` — None. Read-only; never writes memories or config, never fires a trigger, never adds refs.
+
+- **Goal:** Give curiosity a surface in a memory store that is overwhelmingly a correction ledger, by putting unconnected memories side by side.
+- **Inputs:** n per strategy (default 5); strategies subset of rhyme|tags|temporal ('bm25' aliases rhyme); optional memories list (else Turso); optional seed
+- **Outputs:** list[Pair{strategy, score, why, id_a, id_b, preview_a, preview_b, shared_tags, created_a, created_b}]
+- **Errors:** ValueError on an unknown strategy name. A corpus too small for the TF-IDF vectorizer yields no rhyme pairs rather than raising. Turso read errors propagate from the remembering _exec layer on the default path.
+
+\`\`\`
+serendipity(n=5, strategies=['rhyme', 'tags', 'temporal'])
+\`\`\``,
   "task_policy": `# task_policy
 
 **Muninn task_policy** — Load the live policy for a perch autonomous task. Reads the {task}-command ops entry, recent preference memories, and the most recent real run, so task prompts route to fresh policy rather than hardcoded behavior.
@@ -870,6 +910,57 @@ days_since_last_run policy={...}
 
 \`\`\`
 format_summary policy={...} task_name='zeitgeist'
+\`\`\``,
+  "verdict": `# verdict
+
+**Muninn verdict** — Persist a challenge() verdict together with the fingerprint that dates it — judge, profile, and a content hash of the criterion prose — so a rewritten rubric turns staleness into a query instead of a guess.
+
+Module: \`muninn_utils.verdict\` · CLI: \`python -m muninn_utils.verdict\`
+
+## Actions
+
+### \`fingerprint\` — None. Reads one file., idempotent
+
+- **Goal:** Make a verdict's criterion identifiable after the criterion changes.
+- **Inputs:** profile; optional voice (required for prose-register); judge label; optional criterion root
+- **Outputs:** {judge, profile, crit_sha}
+- **Errors:** CriterionUnavailable when the profile prose cannot be read; ValueError on a voice/profile mismatch.
+
+\`\`\`
+fingerprint('prose-register', voice=signature, judge='gemini')
+\`\`\`
+
+### \`store_verdict\` — Writes one memory row. Never supersedes or mutates existing rows.
+
+- **Goal:** Turn a one-time LLM call into reusable derived data.
+- **Inputs:** result dict from challenge(); subject; judge/profile/crit_sha from fingerprint(); optional refs, tags, priority
+- **Outputs:** memory id (str)
+- **Errors:** Turso write errors propagate from remembering.remember.
+
+\`\`\`
+store_verdict(result, subject='blog/draft.html', **fingerprint('prose', judge='gemini'))
+\`\`\`
+
+### \`stale_verdicts\` — None. Read-only., idempotent
+
+- **Goal:** Answer 'which stored conclusions rest on a rubric I have since rewritten?'
+- **Inputs:** optional profile filter; optional voice for voice profiles; optional memories list; optional criterion root
+- **Outputs:** list of memory rows each extended with crit_sha and current_sha
+- **Errors:** CriterionUnavailable if a referenced profile's prose cannot be read.
+
+\`\`\`
+stale_verdicts('prose-register', voice=signature)
+\`\`\`
+
+### \`count_verdicts\` — None. Read-only., idempotent
+
+- **Goal:** Keep the no-schema-column decision under review instead of frozen.
+- **Inputs:** optional memories list; optional n
+- **Outputs:** integer
+- **Errors:** Turso read errors propagate from the remembering layer on the default path.
+
+\`\`\`
+count_verdicts()
 \`\`\``,
   "verify_patch": `# verify_patch
 

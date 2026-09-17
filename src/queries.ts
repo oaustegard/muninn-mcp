@@ -31,6 +31,20 @@ export const RESOLVE_ID_SQL =
 export const GET_MEMORY_SQL =
   "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL";
 
+/**
+ * memory.py::_expand_ref_id (remembering 5.18). No deleted_at filter: a
+ * citation of a retired memory is still a citation of that memory.
+ */
+export const EXPAND_REF_SQL = "SELECT id FROM memories WHERE id LIKE ? LIMIT 2";
+
+/** Retired rows matching an id or prefix, with the replacement they name. */
+export const RETIRED_SQL =
+  "SELECT id, superseded_by FROM memories WHERE id LIKE ? AND deleted_at IS NOT NULL LIMIT 2";
+
+/** One step along a superseded_by chain. */
+export const LINEAGE_STEP_SQL =
+  "SELECT id, superseded_by, deleted_at FROM memories WHERE id = ?";
+
 /** memory.py::get_alternatives reads only the refs column. */
 export const GET_REFS_SQL =
   "SELECT refs FROM memories WHERE id = ? AND deleted_at IS NULL";
@@ -176,6 +190,72 @@ export async function resolveMemoryId(client: Client, memoryId: string): Promise
   return String(matches[0].id);
 }
 
+/** integrity.py::MIN_PREFIX — shorter strings are never treated as prefixes. */
+export const MIN_REF_PREFIX = 8;
+
+/**
+ * Full id for a stored ref that is a unique prefix; otherwise the ref unchanged.
+ *
+ * Port of memory.py::_expand_ref_id (remembering 5.18). Writers stored
+ * 8-character prefixes in `refs` for months; an exact-match read treats each as
+ * a dead pointer. Unlike resolveMemoryId this never throws: an ambiguous or
+ * unknown prefix mid-traversal is a ref that does not resolve, not an error for
+ * the whole chain.
+ */
+export async function expandRefId(client: Client, ref: string): Promise<string> {
+  if (isFullUuid(ref) || ref.length < MIN_REF_PREFIX) return ref;
+  try {
+    const rows = rowsOf(await client.execute({ sql: EXPAND_REF_SQL, args: [`${ref}%`] }));
+    return rows.length === 1 ? String(rows[0].id) : ref;
+  } catch {
+    return ref;
+  }
+}
+
+/** Bound on superseded_by hops; integrity.py uses the same. */
+export const MAX_LINEAGE_HOPS = 50;
+
+/**
+ * The live memory that replaced a retired one, or null.
+ *
+ * Reads `superseded_by` (remembering 5.18). Returns null when the id or prefix
+ * matches no retired row, matches more than one, names no replacement, or the
+ * chain ends at a row that is itself deleted. A store without the column
+ * yields null rather than an error, so an older database reads as "no lineage".
+ *
+ * GREEN-ONLY. Blue's `get()` returns None for a retired row; blue has
+ * `integrity.successor()` but its read path does not call it. Green renders
+ * text for a model, and "not found" for a memory that was replaced is a wrong
+ * answer when the store knows what replaced it.
+ */
+export async function findReplacement(
+  client: Client,
+  memoryId: string,
+): Promise<{ retired: string; current: string } | null> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = rowsOf(await client.execute({ sql: RETIRED_SQL, args: [`${memoryId}%`] }));
+  } catch {
+    return null;
+  }
+  if (rows.length !== 1 || !rows[0].superseded_by) return null;
+  const retired = String(rows[0].id);
+  let cur = String(rows[0].superseded_by);
+  const seen = new Set([retired]);
+  for (let hop = 0; hop < MAX_LINEAGE_HOPS && !seen.has(cur); hop++) {
+    seen.add(cur);
+    const step = rowsOf(await client.execute({ sql: LINEAGE_STEP_SQL, args: [cur] }));
+    if (step.length === 0) return null;
+    const next = step[0].superseded_by;
+    if (next) {
+      cur = String(next);
+      continue;
+    }
+    return step[0].deleted_at ? null : { retired, current: cur };
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------ get
 
 /**
@@ -266,9 +346,14 @@ export const MAX_CHAIN_DEPTH = 10;
  * `_type: "alternatives"` entries are skipped — they are payload, not edges.
  *
  * DIVERGENCE — the root id is resolved from a partial prefix (blue does not),
- * for the same one-tool-one-id-argument reason as getAlternatives. Refs
- * themselves are NOT resolved: they are stored full uuids, and prefix-resolving
- * them would turn a dangling ref into an ambiguity error mid-traversal.
+ * for the same one-tool-one-id-argument reason as getAlternatives.
+ *
+ * Refs go through expandRefId, as blue's do since remembering 5.18. The earlier
+ * note here said refs "are stored full uuids"; the live store held 181 refs
+ * that were 8-character prefixes, and this traversal silently skipped every one
+ * (measured 2026-09-17: memory 79a22f38 reached one of its three live refs).
+ * expandRefId does not throw, so an unresolvable prefix is still just a
+ * dangling ref.
  */
 export async function getChain(
   client: Client,
@@ -300,11 +385,11 @@ export async function getChain(
 
     for (const ref of memory.refs) {
       if (typeof ref === "string") {
-        await traverse(ref, currentDepth + 1);
+        await traverse(await expandRefId(client, ref), currentDepth + 1);
       } else if (ref !== null && typeof ref === "object" && !Array.isArray(ref)) {
         const r = ref as Record<string, unknown>;
         if (r._type === "alternatives") continue;
-        if (r.id) await traverse(String(r.id), currentDepth + 1);
+        if (r.id) await traverse(await expandRefId(client, String(r.id)), currentDepth + 1);
       }
     }
   };

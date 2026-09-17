@@ -1094,7 +1094,8 @@ export async function composeBoot(
     ? formatRelativeAge(lastCreated[0].created_at, now)
     : null;
 
-  return formatBootOutput({
+  const lineage = await lineageSignal(client);
+  const text = formatBootOutput({
     timeAnchor: formatTimeAnchor(tzRaw, now),
     lastSessionGap: gap ? `⏳ Last session activity: ${gap}` : null,
     profile: profileRows as unknown as BootConfigEntry[],
@@ -1111,4 +1112,30 @@ export async function composeBoot(
     dueReminders,
     omissions: GREEN_OMISSIONS,
   }, now);
+  // boot() appends this after the formatted payload, exactly so.
+  return lineage ? `${text}\n${lineage}\n` : text;
+}
+
+/** integrity.py::HIDDEN_LIVE_SQL. Served by idx_memories_active. */
+export const HIDDEN_LIVE_SQL =
+  "SELECT COUNT(*) AS n FROM memories " +
+  "WHERE is_superseded = 1 AND deleted_at IS NULL AND superseded_by IS NULL";
+
+/**
+ * Port of integrity.py::boot_signal (remembering 5.18): one line while live
+ * memories are hidden from recall by a stale superseded flag, empty otherwise.
+ * A failed check says so rather than reading as a clean one.
+ */
+export async function lineageSignal(client: Client): Promise<string> {
+  try {
+    const rs = await client.execute({ sql: HIDDEN_LIVE_SQL, args: [] });
+    const rows = (rs.rows ?? []) as Record<string, unknown>[];
+    const n = rows.length ? Number(rows[0].n ?? 0) : 0;
+    if (!n) return "";
+    return `lineage: ${n} live memories hidden from recall by a stale superseded flag ` +
+      "-- run remembering.scripts.integrity.repair(write=True)";
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "Error";
+    return `lineage check failed: ${name}`;
+  }
 }

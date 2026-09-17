@@ -9,6 +9,8 @@ import type { Client } from "@libsql/client/web";
 import {
   configGet,
   configList,
+  expandRefId,
+  findReplacement,
   getAlternatives,
   getChain,
   getMemory,
@@ -263,6 +265,78 @@ const ids = (c: { id: string }[]) => c.map((m) => m.id);
   const { client } = fake(corpus({}));
   eq("chain on an absent memory is empty",
      await getChain(client, "a7edfdb0-1111-2222-3333-444455556666", 3), []);
+}
+
+
+// -------------------------------------------------- prefix refs and lineage
+
+const U = (c: string) => `${c.repeat(8)}-${c.repeat(4)}-${c.repeat(4)}-${c.repeat(4)}-${c.repeat(12)}`;
+const [UA, UB, UC, UD] = [U("a"), U("b"), U("c"), U("d")];
+
+{
+  const { client, calls } = fake(corpus({ [UB]: {} }));
+  eq("a unique prefix ref expands to the full id", await expandRefId(client, UB.slice(0, 8)), UB);
+  eq("a full-id ref takes no round trip", (await expandRefId(client, UB), calls.length), 1);
+  const before = calls.length;
+  eq("a short string is never treated as a prefix", await expandRefId(client, UB.slice(0, 7)), UB.slice(0, 7));
+  eq("and costs no round trip", calls.length, before);
+  eq("an unknown prefix comes back unchanged", await expandRefId(client, "0badbeef"), "0badbeef");
+}
+
+{
+  const { client } = fake(corpus({ [UA + "x"]: {}, [UA + "y"]: {} }));
+  eq("an ambiguous prefix comes back unchanged, not thrown",
+     await expandRefId(client, UA.slice(0, 8)), UA.slice(0, 8));
+}
+
+{
+  // 79a22f38's shape on the live store: one full ref, three prefixes, one repeat.
+  const { client } = fake(corpus({
+    [UA]: { refs: [UB, UC.slice(0, 8), UB.slice(0, 8), UD.slice(0, 8)] },
+    [UB]: {}, [UC]: {}, [UD]: {},
+  }));
+  const chain = await getChain(client, UA, 1);
+  eq("prefix refs are followed, and a repeat through a prefix is still one visit",
+     ids(chain), [UA, UB, UC, UD]);
+}
+
+/** Retired rows with pointers, for findReplacement. */
+function lineage(rows: Record<string, { by?: string; deleted?: boolean }>): Handler {
+  return (sql, args) => {
+    const key = String(args[0]);
+    if (sql.includes("deleted_at IS NOT NULL")) {
+      const p = key.replace(/%$/, "");
+      return Object.entries(rows)
+        .filter(([id, r]) => id.startsWith(p) && r.deleted)
+        .map(([id, r]) => ({ id, superseded_by: r.by ?? null }));
+    }
+    const r = rows[key];
+    return r ? [{ id: key, superseded_by: r.by ?? null, deleted_at: r.deleted ? "t" : null }] : [];
+  };
+}
+
+{
+  const { client } = fake(lineage({
+    [UA]: { by: UB, deleted: true }, [UB]: { by: UC, deleted: true }, [UC]: {},
+  }));
+  eq("a retired prefix follows superseded_by to the live end",
+     await findReplacement(client, UA.slice(0, 8)), { retired: UA, current: UC });
+  eq("a live memory has no replacement", await findReplacement(client, UC), null);
+}
+
+{
+  const { client } = fake(lineage({ [UA]: { by: UB, deleted: true }, [UB]: { deleted: true } }));
+  eq("a chain ending at a deleted row names nothing", await findReplacement(client, UA), null);
+}
+
+{
+  const { client } = fake(lineage({ [UA]: { by: UB, deleted: true }, [UB]: { by: UA, deleted: true } }));
+  eq("a pointer cycle terminates with nothing", await findReplacement(client, UA), null);
+}
+
+{
+  const { client } = fake(() => { throw new Error("no such column: superseded_by"); });
+  eq("a store without the column reads as no lineage", await findReplacement(client, UA), null);
 }
 
 // ------------------------------------------------------------------- config

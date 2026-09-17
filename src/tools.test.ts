@@ -258,6 +258,31 @@ eq("get is the default op",
   eq("a filtered list passes the category", seen.args, ["ops"]);
   eq("a filtered list names the category in the text", scoped.includes("in category 'ops'"), true);
 }
+// A retired id names the memory that replaced it (remembering 5.18 lineage).
+{
+  const OLD = "0000aaaa-1111-2222-3333-444455556666";
+  const NEW = "0000bbbb-1111-2222-3333-444455556666";
+  const retired = dep((sql, args) => {
+    if (sql.includes("deleted_at IS NOT NULL")) {
+      return String(args[0]).startsWith("0000aaaa") ? [{ id: OLD, superseded_by: NEW }] : [];
+    }
+    if (sql.includes("superseded_by, deleted_at")) {
+      return args[0] === NEW ? [{ id: NEW, superseded_by: null, deleted_at: null }] : [];
+    }
+    if (sql.includes("SELECT * FROM memories")) {
+      return args[0] === NEW ? [row({ id: NEW, summary: "the current version" })] : [];
+    }
+    return [];  // prefix resolution: nothing active matches the retired prefix
+  });
+  const byPrefix = await memoryGet(CFG, { id: "0000aaaa" }, retired);
+  eq("a retired prefix names its replacement",
+     byPrefix.startsWith(`'0000aaaa' was superseded; 0000aaaa -> ${NEW}.`), true);
+  eq("and shows the current memory", byPrefix.includes("the current version"), true);
+  const byFull = await memoryGet(CFG, { id: OLD }, retired);
+  eq("a retired full id names its replacement too", byFull.includes(`-> ${NEW}`), true);
+  const chain = await memoryGet(CFG, { id: OLD, mode: "chain" }, retired);
+  eq("chain mode follows the replacement", chain.includes("Reference chain from 0000bbbb"), true);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -21,6 +21,8 @@ import {
   classifyOpsKey,
   cleanReminderSummary,
   composeBoot,
+  lineageSignal,
+  HIDDEN_LIVE_SQL,
   formatBootOutput,
   formatEntry,
   formatRelativeAge,
@@ -527,6 +529,16 @@ const cfg = (key: string, value: unknown, over: Record<string, unknown> = {}) =>
      text.includes("### identity"), true);
   eq("a failed timezone read still yields a UTC anchor",
      text.split("\n")[0], "⏰ 2026-07-29 16:00 UTC (UTC+00:00) | DST: inactive");
+}
+// integrity.py::boot_signal, ported: silent at zero, loud otherwise, and a failed
+// check never passes for a clean one.
+{
+  const count = (n: unknown) => dep((sql) => sql === HIDDEN_LIVE_SQL ? [{ n }] : []).db(CFG as never);
+  eq("no hidden rows, no line", await lineageSignal(count("0")), "");
+  eq("hidden rows are counted in blue's words",
+     (await lineageSignal(count("3"))).startsWith("lineage: 3 live memories hidden"), true);
+  const broken = dep(() => { throw new TypeError("down"); }).db(CFG as never);
+  eq("a failed check says so", await lineageSignal(broken), "lineage check failed: TypeError");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
