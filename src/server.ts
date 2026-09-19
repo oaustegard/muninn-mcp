@@ -30,7 +30,7 @@ import { gateway, gatewayInputSchema, GATEWAY_TOOL_DESCRIPTION, defaultGatewayDe
 import { econ, econInputSchema, ECON_TOOL_DESCRIPTION, defaultEconDeps, type EconConfig } from "./econ.ts";
 
 export const SERVER_NAME = "muninn";
-export const SERVER_VERSION = "0.3.0";
+export const SERVER_VERSION = "0.3.2";
 
 /**
  * Service credentials the worker holds so that no container ever does
@@ -109,8 +109,11 @@ export function buildServer(
       // resource, so that forgetting a hint on a future memory-derived resource
       // fails closed to the SDK's conservative `private` default rather than
       // inheriting a blanket `public` from this line.
+      // tools/list is NOT hinted (0.3.2): a 300s public hint let a connector
+      // re-sync within five minutes of the 0.3.1 deploy pick up the 11-tool
+      // list, and a stale tool list costs a re-sync per client. The list is
+      // fetched rarely enough that caching it buys nothing.
       cacheHints: {
-        "tools/list": { ttlMs: 300_000, cacheScope: "public" },
         "resources/list": { ttlMs: 300_000, cacheScope: "public" },
         "resources/templates/list": { ttlMs: 300_000, cacheScope: "public" },
       },

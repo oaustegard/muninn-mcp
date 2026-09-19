@@ -306,8 +306,10 @@ const toolText = (r: Rpc) =>
   const templates = await rpc("resources/templates/list", {}, { modern: true });
   eq("the template listing is publicly cacheable", templates.result?.cacheScope, "public");
 
+  // 0.3.2: tools/list carries NO cache hint — a public 300s TTL let a client
+  // re-sync just after a deploy keep the previous tool list.
   const tools = await rpc("tools/list", {}, { modern: true });
-  eq("tools/list stays publicly cacheable", tools.result?.cacheScope, "public");
+  eq("tools/list is not publicly cacheable", tools.result?.cacheScope === "public", false);
 }
 
 // ------------------------------------------------------- two doors, one thing
