@@ -347,9 +347,9 @@ const toolText = (r: Rpc) =>
 {
   const tools = (await rpc("tools/list")).result?.tools as Array<{ name: string; description: string }>;
   const byName = Object.fromEntries(tools.map((t) => [t.name, t.description]));
-  eq("the read tools plus the docs and boot doors are registered",
+  eq("the read and write tools plus the docs and boot doors are registered",
      tools.map((t) => t.name).sort(),
-     ["boot", "memory_get", "muninn_config", "muninn_docs", "recall"]);
+     ["boot", "forget", "memory_get", "muninn_config", "muninn_docs", "recall", "remember"]);
   // §9 item 6: boot is BOTH a tool and a resource, because a resource is
   // something a client offers a user to attach, and boot must fire on its own.
   eq("boot takes no arguments",

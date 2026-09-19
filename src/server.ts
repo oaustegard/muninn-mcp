@@ -22,9 +22,26 @@ import {
   type DocRegistry,
 } from "./resources.ts";
 import { composeBoot, defaultBootDeps, type BootDeps } from "./boot.ts";
+import { configSet, forget, formatWrite, remember, type WriteDeps } from "./writes.ts";
 
 export const SERVER_NAME = "muninn";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
+
+/**
+ * The server instructions land in the system prompt of every session where the
+ * connector is enabled (measured 2026-09-19 in Cowork: they sit alongside the
+ * other connectors' instructions). That is what makes them the boot trigger —
+ * it follows the account, not a project, so a plain Claude chat is Muninn.
+ */
+export const SERVER_INSTRUCTIONS =
+  "Muninn — Oskar's persistent memory. In any NEW session call `boot` before " +
+  "anything else; its payload is identity, operating rules and recent context " +
+  "to inhabit, not a deliverable. `recall` searches memories; `memory_get` " +
+  "fetches one by id; `remember` stores one (pass `supersedes` to replace a " +
+  "prior memory); `forget` retires one; `muninn_config` reads and sets the " +
+  "profile/ops/journal store; `muninn_docs` and the `muninn://` resources hold " +
+  "the full reference. Writes go through these tools, never through the " +
+  "container: no Turso credential is needed there.";
 
 /**
  * @param registry the progressive-disclosure registry. Injectable so tests can
@@ -37,6 +54,7 @@ export function buildServer(
   registry: DocRegistry = defaultRegistry,
   bootDeps: BootDeps = defaultBootDeps,
 ): McpServer {
+  const writeDeps: WriteDeps = { ...deps, version: SERVER_VERSION };
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -55,14 +73,7 @@ export function buildServer(
         tools: { listChanged: false },
         resources: { listChanged: false },
       },
-      instructions:
-        "Muninn's persistent memory. `recall` searches stored memories by text " +
-        "and tags, ranked by relevance, recency, priority and confidence; " +
-        "`memory_get` fetches one memory by id and walks its references; " +
-        "`muninn_config` reads the profile/ops/journal config store; " +
-        "`muninn_docs` (and the `muninn://` resources) hold the full reference " +
-        "for all three. This deployment is READ-ONLY: writes still go through " +
-        "the Python skill.",
+      instructions: SERVER_INSTRUCTIONS,
       // CACHE SCOPE IS A PRIVACY BOUNDARY. Public is for results that are
       // byte-identical for every caller and change only on deploy: the tool
       // list, and the documentation listings backed by `docs-generated.ts`.
@@ -169,31 +180,46 @@ export function buildServer(
   server.registerTool(
     "muninn_config",
     {
-      title: "Read Muninn config",
-      // What each category MEANS, and why there is no config_set, are deferred:
-      // `readOnlyHint` and the server instructions already say read-only, and
-      // the category glosses are reference material by definition.
+      title: "Read or set Muninn config",
+      // What each category MEANS is deferred: the category glosses are
+      // reference material by definition. `set` rides on this schema rather
+      // than its own tool (§2 budget): same key/category vocabulary, one op.
       description:
-        "Read the config store — profile, ops, journal. op 'get' returns one key's " +
-        "value; 'list' indexes the keys without their values. " +
+        "The config store — profile, ops, journal. op 'get' returns one key's " +
+        "value; 'list' indexes the keys without their values; 'set' writes one " +
+        "(new keys default to boot_load=false; read_only keys refuse). " +
         // No config-specific doc is generated today; `vocabulary` is the one
         // that documents the config categories, so it is where a caller who
         // needs more than this description should be sent. `config` leads in
         // case the generator grows a dedicated topic later.
         pointerFor(registry, ["config", "vocabulary"]),
       inputSchema: z.object({
-        op: z.enum(["get", "list"]).optional().describe("Default 'get'."),
-        key: z.string().optional().describe("Config key. Required when op='get'."),
+        op: z.enum(["get", "list", "set"]).optional().describe("Default 'get'."),
+        key: z.string().optional().describe("Config key. Required for 'get' and 'set'."),
         category: z
           .string()
           .optional()
-          .describe("Filter to one category. op='list' only."),
+          .describe("'list': filter to one category. 'set': required — profile, ops or journal."),
+        value: z.string().optional().describe("op='set' only. The full new value."),
+        boot_load: z
+          .boolean()
+          .optional()
+          .describe("op='set' only. Omit to keep an existing key's flag."),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: false, idempotentHint: true },
     },
     async (args) => {
       try {
-        return { content: [{ type: "text" as const, text: await muninnConfig(config, args, deps) }] };
+        if (args.op === "set") {
+          const text = await configSet(config, {
+            key: String(args.key ?? ""),
+            value: String(args.value ?? ""),
+            category: String(args.category ?? ""),
+            boot_load: args.boot_load,
+          }, writeDeps);
+          return { content: [{ type: "text" as const, text }] };
+        }
+        return { content: [{ type: "text" as const, text: await muninnConfig(config, { ...args, op: args.op === "list" ? "list" : "get" }, deps) }] };
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: errorText(err) }],
@@ -203,7 +229,76 @@ export function buildServer(
     },
   );
 
-  // `boot` is the fifth and last tool, and the one with no arguments at all.
+  // The write pair. `remember` covers both new memories and supersedes (one
+  // schema, discriminated by `supersedes`), `forget` is the soft delete. Seven
+  // tools in all — inside §2's 8-12 budget with room for one GitHub tool later.
+  server.registerTool(
+    "remember",
+    {
+      title: "Store a memory",
+      description:
+        "Store a memory: decisions, corrections, procedures, findings. Store " +
+        "immediately when context is worth keeping; asking first is a failure " +
+        "mode. Pass `supersedes` (an id or unique prefix) to replace a prior " +
+        "memory instead of adding beside it. " +
+        pointerFor(registry, ["types", "memory"]),
+      inputSchema: z.object({
+        summary: z.string().describe("The memory text. Lead with the finding; dates and ids inline."),
+        type: z
+          .enum(["decision", "world", "anomaly", "experience", "interaction", "procedure", "analysis"])
+          .describe("Memory type."),
+        tags: z.array(z.string()).optional().describe("Tags; novel ones join the recall vocabulary."),
+        priority: z
+          .number()
+          .optional()
+          .describe("-1 background, 0 normal, 1 important, 2 critical. Procedures floor at 1."),
+        conf: z.number().optional().describe("0-1. Defaults: decision 0.8, procedure 0.9."),
+        refs: z.array(z.string()).optional().describe("Cited memory ids (provenance, not supersession)."),
+        supersedes: z.string().optional().describe("Id of the memory this one replaces."),
+        drift_class: z
+          .enum(["additive", "narrowing", "broadening", "replacing"])
+          .optional()
+          .describe("With `supersedes` on a procedure: how the rule moved."),
+      }),
+      annotations: { readOnlyHint: false, idempotentHint: true },
+    },
+    async (args) => {
+      try {
+        const r = await remember(config, args, writeDeps);
+        return { content: [{ type: "text" as const, text: formatWrite("stored", r) }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: errorText(err) }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "forget",
+    {
+      title: "Forget a memory",
+      description: "Soft-delete one memory by id or unique prefix. Reversible only by hand.",
+      inputSchema: z.object({
+        id: z.string().describe("Full uuid or a unique id prefix."),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    },
+    async (args) => {
+      try {
+        const r = await forget(config, args, writeDeps);
+        return { content: [{ type: "text" as const, text: formatWrite("forgot", r) }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: errorText(err) }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // `boot` is the last tool, and the one with no arguments at all.
   //
   // §9 item 6 asked whether boot should be a tool or a resource; §8 answered
   // both, and the reason the TOOL half cannot be dropped is that boot must fire

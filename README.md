@@ -1,6 +1,6 @@
 # muninn-mcp
 
-Remote MCP server for Muninn's memory. **Read-only. Stage 1.**
+Remote MCP server for Muninn's memory. Reads and, since 0.2.0, writes.
 
 Green half of the migration in
 [`muninn-utilities/docs/mcp-migration.md`](https://github.com/oaustegard/muninn-utilities/blob/main/docs/mcp-migration.md) §5.
@@ -14,21 +14,31 @@ chains, `refs` provenance and `is_superseded` flags encode order.
 | Stage | | |
 |---|---|---|
 | 0 | write provenance (`source` column) | ✅ shipped, muninn-utilities #98 |
-| 1 | green read-only + parity harness | 🔨 this repo — gate at 67/74, 0 regressions |
-| 2 | reads promoted to production | |
-| 3 | writes, shadowed | |
-| 4 | cutover | |
+| 1 | green read-only + parity harness | ✅ gate at 67/74, 0 regressions |
+| 2 | reads promoted to production | ⏳ `TURSO_URL` still points at the branch (see docs/deploying.md) |
+| 3 | writes | ✅ 0.2.0 — `remember` (incl. supersede), `forget`, `muninn_config` op `set`; direct ports, stamped `mcp@<version>` |
+| 4 | cutover | ⏳ the Cowork session no longer needs a Turso credential once 2 lands |
 | 5 | collapse the double implementation | |
 
-Five tools, all read-only. Write tools do not exist here — not disabled,
-**absent** — and must not appear until the parity harness is green on the
-production corpus.
+Seven tools. The write path (`src/writes.ts`) transcribes memory.py and
+config.py the same way the read path does: same SQL, same defaults, same
+prefix resolution, so rows are indistinguishable from the Python skill's
+except for `source`. Not ported: background tag co-occurrence maintenance
+(blue rebuilds it) and `config_fire` instrumentation.
+
+The reason writes moved here (2026-09-19): in Cowork every project-doc read
+is transcript, so the Turso token leaked on every boot. With writes on the
+Worker the container needs no memory credential at all, and the server
+`instructions` (which land in the system prompt wherever the connector is
+enabled) carry the boot trigger — no project required.
 
 | Tool | |
 |---|---|
 | `recall` | search memories by text and tags |
 | `memory_get` | one memory by id, its reference chain, or a decision's alternatives |
-| `muninn_config` | the profile / ops / journal config store |
+| `remember` | store a memory; `supersedes` retires a prior one in the same batch |
+| `forget` | soft-delete a memory by id or prefix |
+| `muninn_config` | the profile / ops / journal config store — get, list, set |
 | `muninn_docs` | the deferred reference, for clients that don't read resources |
 | `boot` | the composed boot payload |
 

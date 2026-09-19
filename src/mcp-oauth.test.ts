@@ -137,8 +137,8 @@ eq("the provider constructs with this option set", typeof (provider as { fetch?:
      body.includes(`action="/authorize${escapeAttr(AUTHZ_QS)}"`), true);
   eq("preserving the OAuth params in the action", body.includes("response_type=code"), true);
   eq("with a password field", body.includes('name="password"'), true);
-  eq("naming what is granted", /read access/i.test(body), true);
-  eq("and saying the deployment is read-only", /read-only/i.test(body), true);
+  eq("naming what is granted", /read and write access/i.test(body), true);
+  eq("and not understating it as read-only", /read-only/i.test(body), false);
   eq("no error shown on the first view", body.includes("class=\"err\""), false);
   eq("rendering the page authorizes nobody", [calls.parse, calls.complete], [0, 0]);
 }
@@ -221,7 +221,7 @@ for (const [label, configured] of [
   const rootBody = await root.text();
   eq("/ returns the banner", root.status, 200);
   eq("naming the server", rootBody.includes("Muninn MCP"), true);
-  eq("and its read-only posture", /read-only/i.test(rootBody), true);
+  eq("and no longer claiming a read-only posture", /read-only/i.test(rootBody), false);
 
   const miss = await defaultHandler.fetch(get("/nope"), env);
   eq("an unknown path 404s", miss.status, 404);

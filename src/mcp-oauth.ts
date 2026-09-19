@@ -4,7 +4,7 @@
  * claude.ai connectors authenticate over OAuth 2.1 (metadata discovery + client
  * registration + auth-code/PKCE), NOT a static bearer token — §9 decision 2. This
  * entry wraps the shared MCP handler (`mcpHandler` from `index.ts`, the same
- * read-only tools and resources registered in `server.ts`) with Cloudflare's
+ * tools and resources registered in `server.ts`) with Cloudflare's
  * `@cloudflare/workers-oauth-provider`, which makes the Worker a spec-compliant
  * OAuth provider. Sign-in is a self-contained password page gated by a Worker
  * secret — no upstream identity provider.
@@ -17,9 +17,9 @@
  * Ported from sage-mcp's `mcp-oauth.ts`, which is verified working against the
  * 2026-07-28 spec. Muninn differs from Sage in two ways worth stating: there is no
  * service binding (Muninn talks to Turso directly, so Sage's `SAGE_SVC` /
- * `SAGE_API_URL` are gone), and this deployment is READ-ONLY — Stage 1 of
- * docs/mcp-migration.md. The consent screen says so, because a consent screen that
- * overstates what it grants is worse than none.
+ * `SAGE_API_URL` are gone), and since 0.2.0 this deployment WRITES too (remember, forget, config set —
+ * src/writes.ts). The consent screen says so, because a consent screen that
+ * understates what it grants is worse than none.
  *
  * DCR DEPRECATION (2026-07-28). The spec revision this server targets deprecates
  * Dynamic Client Registration; the provider library still serves `/register`
@@ -157,13 +157,14 @@ export function loginPage(search: string, error: string): string {
     input{background:#222;color:#eee;border:1px solid #444}button{background:#eee;color:#111}}
 </style></head><body>
 <h1>Muninn MCP</h1>
-<p>Authorizing grants this client <strong>read access to Muninn's memory</strong> —
-search, recall and the boot payload, over every memory in the connected database.</p>
-<p class="note">Read-only: this deployment registers no tool that can write, edit or
-delete a memory. Only authorize a client you would let read all of it.</p>
+<p>Authorizing grants this client <strong>read and write access to Muninn's memory</strong> —
+search, recall, the boot payload, and storing, superseding or forgetting memories and
+config entries, over every memory in the connected database.</p>
+<p class="note">Writes are soft-deletes and inserts with a provenance stamp; nothing here
+hard-deletes. Only authorize a client you would let read and write all of it.</p>
 <form method="POST" action="/authorize${escapeAttr(search)}">
   <input type="password" name="password" placeholder="Password" autofocus required autocomplete="current-password">
-  <button type="submit">Authorize read access</button>
+  <button type="submit">Authorize</button>
   ${error ? `<p class="err">${error}</p>` : ""}
 </form>
 </body></html>`;
@@ -242,7 +243,7 @@ export const defaultHandler = {
 
     if (url.pathname === "/") {
       return new Response(
-        "Muninn MCP (read-only, OAuth). Add as a custom connector in claude.ai.\n",
+        "Muninn MCP (OAuth). Add as a custom connector in claude.ai.\n",
       );
     }
     return new Response("Not found", { status: 404 });

@@ -66,7 +66,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("Muninn MCP (read-only) — POST MCP requests to this endpoint.\n");
+      return new Response("Muninn MCP — POST MCP requests to this endpoint.\n");
     }
     const unauthorized = checkAuth(request, env);
     if (unauthorized) return unauthorized;
