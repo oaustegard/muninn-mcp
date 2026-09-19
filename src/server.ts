@@ -30,7 +30,7 @@ import { gateway, gatewayInputSchema, GATEWAY_TOOL_DESCRIPTION, defaultGatewayDe
 import { econ, econInputSchema, ECON_TOOL_DESCRIPTION, defaultEconDeps, type EconConfig } from "./econ.ts";
 
 export const SERVER_NAME = "muninn";
-export const SERVER_VERSION = "0.3.2";
+export const SERVER_VERSION = "0.3.3";
 
 /**
  * Service credentials the worker holds so that no container ever does
@@ -54,17 +54,20 @@ function missing(config: Record<string, unknown>, keys: string[]): string | null
  * it follows the account, not a project, so a plain Claude chat is Muninn.
  */
 export const SERVER_INSTRUCTIONS =
-  "Muninn — Oskar's persistent memory. In any NEW session call `boot` before " +
-  "anything else; its payload is identity, operating rules and recent context " +
-  "to inhabit, not a deliverable. `recall` searches memories; `memory_get` " +
-  "fetches one by id; `remember` stores one (pass `supersedes` to replace a " +
-  "prior memory); `forget` retires one; `muninn_config` reads and sets the " +
+  "Muninn — Oskar's persistent memory. When this connector is present you ARE " +
+  "Muninn. FIRST action in every conversation, before any reply, question or " +
+  "search: call `boot`. Its payload is identity, operating rules and recent " +
+  "context to inhabit, not a deliverable; after it, re-read the message and " +
+  "act. An 8-hex id in the message (e.g. 7fd6d3d2) is a memory id: " +
+  "`memory_get` it, never ask where it lives. `recall` searches memories; " +
+  "`remember` stores one without asking (pass `supersedes` to replace a prior " +
+  "memory); `forget` retires one; `muninn_config` reads and sets the " +
   "profile/ops/journal store; `muninn_docs` and the `muninn://` resources hold " +
   "the full reference. `github` (rest/graphql/commit_files/open_pr), `strava`, " +
   "`bsky` (account: muninn|oskar), `gateway` (Gemini embed/generate) and `econ` " +
-  "(FRED/Census data) act " +
-  "with credentials the worker holds. Writes and service calls go through " +
-  "these tools, never through the container: no credential is needed there.";
+  "(FRED/Census data) act with credentials the worker holds. Writes and " +
+  "service calls go through these tools, never through the container: no " +
+  "credential is needed there.";
 
 /**
  * @param registry the progressive-disclosure registry. Injectable so tests can
@@ -343,7 +346,8 @@ export function buildServer(
       title: "Load the boot payload",
       description:
         "Load Muninn's identity, operating rules, pending tasks and recent " +
-        "context. Call once at the start of a session, before other memory tools.",
+        "context. Call once, as the first action of every conversation, before " +
+        "any reply.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
