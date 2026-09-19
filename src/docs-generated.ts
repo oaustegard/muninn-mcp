@@ -13,8 +13,8 @@
 import type { DocTopic, DocProvenance } from "./docs.ts";
 
 export const GENERATED_FROM: DocProvenance = {
-  commit: "683f6a2da0ba2fbb27942e06c04388aac410d30c",
-  generatedAt: "2026-09-17T12:38:28.864Z",
+  commit: "unknown",
+  generatedAt: "2026-09-19T14:15:12.241Z",
   sources: [
     "manifests/blog-publish/muninn-blog-publish.v0.4.json",
     "manifests/boot-ledger/muninn-boot-ledger.v0.4.json",
@@ -399,7 +399,7 @@ export const UTILITY_INDEX: DocTopic = {
   topic: "utilities",
   uri: "muninn://utilities",
   title: "Utility index",
-  description: "Routing index for 31 Muninn utilities: which one handles which task shape.",
+  description: "Routing index for 32 Muninn utilities: which one handles which task shape.",
   mimeType: "text/markdown",
   text: `# Utility index
 
@@ -435,6 +435,7 @@ until a task matches one of these shapes.
 No install manifest upstream, so there is no generated page. The line below is
 all the routing information there is; the utility's own module documents the rest.
 
+- **\`backup\`** — Backing up the memory store, or asked when it was last backed up. run_backup() dumps Turso -> gzip -> commits to the private oaustegard/muninn-backup repo, self-skipping unless ~a week has passed. Wired into the sleep task ahead of pruning.
 - **\`bsky_list\`** — Building or editing a Bluesky list: turning a starter pack, an existing list, or an actor's followers/follows into a curatelist, modlist or referencelist in a repo; adding or removing members; deleting a list without orphaning its listitems. The write half that browsing-bluesky and atprotoing never had — both read lists, neither can build one. Writes as Muninn by default; writing to Oskar's repo needs an explicit as_oskar. Reads for dedupe and removal go to the owning repo, not the AppView, which lags writes by seconds.
 - **\`bsky_moderation\`** — Moderating a Bluesky thread's repliers in bulk: extract DIDs+text of everyone who replied to a post (extract_thread_repliers, context-lean), classify them, then mute/block the matching accounts (moderate, bounded-parallel, dry_run-default). Two-stage: extraction + authed action, classification is the caller's job.
 - **\`capability_model\`** — Handing a subagent (or any restricted caller) a slice of the Muninn API. Stable capability ids -> callables, each declaring what environment it needs and whether it writes; expand(ids, allow_writes=False) raises rather than filtering. Use instead of hand-copying functions into a reduced module.
@@ -584,7 +585,20 @@ Module: \`muninn_utils.hypothetical_classifier\` · CLI: \`python -m muninn_util
 
 Env: \`CF_ACCOUNT_ID\`, \`CF_GATEWAY_ID\`, \`CF_API_TOKEN\` (secret) (\`?\` = optional)
 
-## Actions`,
+## Actions
+
+### \`run\`
+
+- **Goal:** Classify items into a closed label vocabulary too large to ship in a prompt: a cheap LLM invents a free-form label, an embedder snaps the invention onto the nearest legal one.
+- **Inputs:** (none)
+- **Outputs:** (unspecified)
+- **Errors:** (unrecorded)
+
+\`\`\`
+run
+\`\`\`
+
+> Synthesized from a pre-v0.4 manifest: no \`docs\` block upstream.`,
   "issue_close": `# issue_close
 
 **Muninn issue_close** — Close a GitHub issue with a learning synthesis. Posts the synthesis as a closing comment, then writes it as a \`decision\` memory tagged with the issue number — encoded as a flowing DAG so the close ack returns the moment GitHub returns 2xx, while the memory write happens detached.

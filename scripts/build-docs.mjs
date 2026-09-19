@@ -588,8 +588,22 @@ function briefExample(action) {
 function utilityMarkdown(entry) {
   const { json, name } = entry;
   const tool = json.tool || {};
-  const actions = (json.actions || []).slice();
+  let actions = (json.actions || []).slice();
   const synthesized = [];
+  // A manifest with no `actions` at all (hypothetical-classifier v0.3, 2026-09-19)
+  // would otherwise render a page with no Goal/Inputs/Outputs/Errors — the shape
+  // every other page has and the generator tests assert. Synthesize one action
+  // from the tool summary so the page keeps its shape and the utility lands in
+  // the "finish the upgrade" report, which is where a missing block belongs.
+  if (actions.length === 0) {
+    actions = [{
+      name: "run",
+      summary: (tool.summary || "").trim() || "(no summary recorded)",
+      invocation: json.runtime?.entrypoint?.command
+        ? { command: json.runtime.entrypoint.command }
+        : undefined,
+    }];
+  }
 
   const env = (json.env || [])
     .map((e) => `\`${e.name}\`${e.required ? "" : "?"}${e.secret ? " (secret)" : ""}`)
