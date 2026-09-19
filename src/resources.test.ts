@@ -349,7 +349,7 @@ const toolText = (r: Rpc) =>
   const byName = Object.fromEntries(tools.map((t) => [t.name, t.description]));
   eq("the read and write tools plus the docs and boot doors are registered",
      tools.map((t) => t.name).sort(),
-     ["boot", "bsky", "forget", "gateway", "github", "memory_get", "muninn_config", "muninn_docs", "recall", "remember", "strava"]);
+     ["boot", "bsky", "econ", "forget", "gateway", "github", "memory_get", "muninn_config", "muninn_docs", "recall", "remember", "strava"]);
   // 0.3.0: the four service tools register regardless of configuration — the
   // tool list must not vary with which secrets are set — and an unconfigured
   // one answers per call, naming the secret, instead of vanishing.

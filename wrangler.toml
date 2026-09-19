@@ -38,6 +38,8 @@ id = "55a30efa331a40b2a6f3633137865acd"
 #                            the two Bluesky accounts behind `bsky` (account=)
 #   CF_ACCOUNT_ID, CF_GATEWAY_ID, CF_API_TOKEN
 #                            AI Gateway for `gateway` (Gemini embed/generate)
+#   FRED_API_KEY, CENSUS_API_KEY
+#                            for `econ` (each op needs only its own key)
 #   Each service tool registers whether or not its secrets are set and answers
 #   "not configured" per call when they are not; the tool list never varies.
 #   MCP_AUTH_TOKEN           bearer secret, only for the src/index.ts deployment.

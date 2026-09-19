@@ -58,6 +58,7 @@ wrangler secret put STRAVA_CLIENT_ID; wrangler secret put STRAVA_CLIENT_SECRET
 wrangler secret put BSKY_HANDLE; wrangler secret put BSKY_APP_PASSWORD
 wrangler secret put MUNINN_BSKY_HANDLE; wrangler secret put MUNINN_BSKY_APP_PASSWORD
 wrangler secret put CF_ACCOUNT_ID; wrangler secret put CF_GATEWAY_ID; wrangler secret put CF_API_TOKEN
+wrangler secret put FRED_API_KEY; wrangler secret put CENSUS_API_KEY
 ```
 
 From a session, `printf '%s' "$VAR" | wrangler secret put VAR` after sourcing the

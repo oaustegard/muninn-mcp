@@ -27,6 +27,7 @@ import { github, githubInputSchema, GITHUB_TOOL_DESCRIPTION, defaultGithubDeps, 
 import { strava, stravaInputSchema, STRAVA_TOOL_DESCRIPTION, defaultStravaDeps, type StravaConfig } from "./strava.ts";
 import { bsky, bskyInputSchema, BSKY_TOOL_DESCRIPTION, defaultBskyDeps, type BskyConfig } from "./bsky.ts";
 import { gateway, gatewayInputSchema, GATEWAY_TOOL_DESCRIPTION, defaultGatewayDeps, type GatewayConfig } from "./gateway.ts";
+import { econ, econInputSchema, ECON_TOOL_DESCRIPTION, defaultEconDeps, type EconConfig } from "./econ.ts";
 
 export const SERVER_NAME = "muninn";
 export const SERVER_VERSION = "0.3.0";
@@ -38,7 +39,7 @@ export const SERVER_VERSION = "0.3.0";
  * answers every call with a "not configured" error naming the secret.
  */
 export type ServiceSecrets = Partial<
-  GithubConfig & Omit<StravaConfig, keyof Config> & BskyConfig & GatewayConfig
+  GithubConfig & Omit<StravaConfig, keyof Config> & BskyConfig & GatewayConfig & EconConfig
 >;
 
 function missing(config: Record<string, unknown>, keys: string[]): string | null {
@@ -60,7 +61,8 @@ export const SERVER_INSTRUCTIONS =
   "prior memory); `forget` retires one; `muninn_config` reads and sets the " +
   "profile/ops/journal store; `muninn_docs` and the `muninn://` resources hold " +
   "the full reference. `github` (rest/graphql/commit_files/open_pr), `strava`, " +
-  "`bsky` (account: muninn|oskar) and `gateway` (Gemini embed/generate) act " +
+  "`bsky` (account: muninn|oskar), `gateway` (Gemini embed/generate) and `econ` " +
+  "(FRED/Census data) act " +
   "with credentials the worker holds. Writes and service calls go through " +
   "these tools, never through the container: no credential is needed there.";
 
@@ -414,6 +416,18 @@ export function buildServer(
     },
     guarded(["CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN"], (args) =>
       gateway(config as GatewayConfig, args, defaultGatewayDeps)),
+  );
+
+  server.registerTool(
+    "econ",
+    {
+      title: "FRED and Census data",
+      description: ECON_TOOL_DESCRIPTION,
+      inputSchema: econInputSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    // econ() also checks per op, so one key alone still serves its own op.
+    guarded([], (args) => econ(config as EconConfig, args, defaultEconDeps)),
   );
 
   return server;
