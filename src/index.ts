@@ -35,9 +35,9 @@
 
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { defaultDeps, type Config, type Deps } from "./tools.ts";
-import { buildServer } from "./server.ts";
+import { buildServer, type ServiceSecrets } from "./server.ts";
 
-export interface Env extends Config {
+export interface Env extends Config, ServiceSecrets {
   /**
    * Shared secret for the bearer deployment of THIS file. Unset = open;
    * acceptable only for a read-only branch DB. Unused by `mcp-oauth.ts`, where

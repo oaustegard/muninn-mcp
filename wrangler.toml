@@ -30,6 +30,16 @@ id = "55a30efa331a40b2a6f3633137865acd"
 #                            than allowing any (see mcp-oauth.ts `passwordMatches`),
 #                            so a deploy that forgets it is dead, not open. Generate
 #                            it — there is no rate limiting in front of the page.
+#   GITHUB_TOKEN             fine-grained PAT for the `github` tool (0.3.0)
+#   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET
+#                            for the `strava` tool; the OAuth token triple itself
+#                            lives in Turso config key strava-oauth-token
+#   BSKY_HANDLE, BSKY_APP_PASSWORD, MUNINN_BSKY_HANDLE, MUNINN_BSKY_APP_PASSWORD
+#                            the two Bluesky accounts behind `bsky` (account=)
+#   CF_ACCOUNT_ID, CF_GATEWAY_ID, CF_API_TOKEN
+#                            AI Gateway for `gateway` (Gemini embed/generate)
+#   Each service tool registers whether or not its secrets are set and answers
+#   "not configured" per call when they are not; the tool list never varies.
 #   MCP_AUTH_TOKEN           bearer secret, only for the src/index.ts deployment.
 #                            Unset = open there, which is why that variant belongs
 #                            on a branch DB or behind Cloudflare Access.

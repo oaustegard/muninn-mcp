@@ -1,14 +1,14 @@
 {
   "name": "muninn-mcp",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Remote MCP server for Muninn's memory. Read-only, Stage 1.",
+  "description": "Remote MCP server for Muninn's memory and the credentials its sessions no longer hold.",
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "build:docs": "node scripts/build-docs.mjs",
-    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/expansion.test.ts && node --experimental-strip-types src/tools.test.ts && node --experimental-strip-types src/resources.test.ts && node --experimental-strip-types src/boot.test.ts && node --experimental-strip-types src/mcp-oauth.test.ts && node --experimental-strip-types src/writes.test.ts",
+    "test": "node --experimental-strip-types src/turso.test.ts && node --experimental-strip-types src/queries.test.ts && node --experimental-strip-types src/expansion.test.ts && node --experimental-strip-types src/tools.test.ts && node --experimental-strip-types src/resources.test.ts && node --experimental-strip-types src/boot.test.ts && node --experimental-strip-types src/mcp-oauth.test.ts && node --experimental-strip-types src/writes.test.ts && node --experimental-strip-types src/github.test.ts && node --experimental-strip-types src/strava.test.ts && node --experimental-strip-types src/bsky.test.ts && node --experimental-strip-types src/gateway.test.ts",
     "harness": "npm run harness:blue && npm run harness:green && npm run harness:diff",
     "harness:blue": "python3 harness/blue.py",
     "harness:green": "node --experimental-strip-types harness/green.mjs",

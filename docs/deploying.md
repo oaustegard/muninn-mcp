@@ -49,6 +49,20 @@ wrangler secret put TURSO_TOKEN
 wrangler secret put MCP_LOGIN_PASSWORD   # generate it — see below
 ```
 
+Service tools (0.3.0) take theirs the same way; each is optional and an unset
+one answers "not configured" per call rather than dropping out of the tool list:
+
+```bash
+wrangler secret put GITHUB_TOKEN
+wrangler secret put STRAVA_CLIENT_ID; wrangler secret put STRAVA_CLIENT_SECRET
+wrangler secret put BSKY_HANDLE; wrangler secret put BSKY_APP_PASSWORD
+wrangler secret put MUNINN_BSKY_HANDLE; wrangler secret put MUNINN_BSKY_APP_PASSWORD
+wrangler secret put CF_ACCOUNT_ID; wrangler secret put CF_GATEWAY_ID; wrangler secret put CF_API_TOKEN
+```
+
+From a session, `printf '%s' "$VAR" | wrangler secret put VAR` after sourcing the
+env file keeps the value out of the transcript.
+
 **Generate the password; do not choose one.** There is no rate limiting in front
 of the login page, so its entropy is the entire defence:
 

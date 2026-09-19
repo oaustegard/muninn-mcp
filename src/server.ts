@@ -23,9 +23,28 @@ import {
 } from "./resources.ts";
 import { composeBoot, defaultBootDeps, type BootDeps } from "./boot.ts";
 import { configSet, forget, formatWrite, remember, type WriteDeps } from "./writes.ts";
+import { github, githubInputSchema, GITHUB_TOOL_DESCRIPTION, defaultGithubDeps, type GithubConfig } from "./github.ts";
+import { strava, stravaInputSchema, STRAVA_TOOL_DESCRIPTION, defaultStravaDeps, type StravaConfig } from "./strava.ts";
+import { bsky, bskyInputSchema, BSKY_TOOL_DESCRIPTION, defaultBskyDeps, type BskyConfig } from "./bsky.ts";
+import { gateway, gatewayInputSchema, GATEWAY_TOOL_DESCRIPTION, defaultGatewayDeps, type GatewayConfig } from "./gateway.ts";
 
 export const SERVER_NAME = "muninn";
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.3.0";
+
+/**
+ * Service credentials the worker holds so that no container ever does
+ * (handoff 69f3301c steps 3-4). All optional: a tool whose secrets are unset
+ * still registers — the tool list must not change with configuration — and
+ * answers every call with a "not configured" error naming the secret.
+ */
+export type ServiceSecrets = Partial<
+  GithubConfig & Omit<StravaConfig, keyof Config> & BskyConfig & GatewayConfig
+>;
+
+function missing(config: Record<string, unknown>, keys: string[]): string | null {
+  const absent = keys.filter((k) => !config[k]);
+  return absent.length ? `not configured on the worker: wrangler secret put ${absent.join(", ")}` : null;
+}
 
 /**
  * The server instructions land in the system prompt of every session where the
@@ -40,8 +59,10 @@ export const SERVER_INSTRUCTIONS =
   "fetches one by id; `remember` stores one (pass `supersedes` to replace a " +
   "prior memory); `forget` retires one; `muninn_config` reads and sets the " +
   "profile/ops/journal store; `muninn_docs` and the `muninn://` resources hold " +
-  "the full reference. Writes go through these tools, never through the " +
-  "container: no Turso credential is needed there.";
+  "the full reference. `github` (rest/graphql/commit_files/open_pr), `strava`, " +
+  "`bsky` (account: muninn|oskar) and `gateway` (Gemini embed/generate) act " +
+  "with credentials the worker holds. Writes and service calls go through " +
+  "these tools, never through the container: no credential is needed there.";
 
 /**
  * @param registry the progressive-disclosure registry. Injectable so tests can
@@ -49,7 +70,7 @@ export const SERVER_INSTRUCTIONS =
  *   is a build artefact and its contents must not be a test fixture.
  */
 export function buildServer(
-  config: Config,
+  config: Config & ServiceSecrets,
   deps: Deps = defaultDeps,
   registry: DocRegistry = defaultRegistry,
   bootDeps: BootDeps = defaultBootDeps,
@@ -331,6 +352,68 @@ export function buildServer(
         };
       }
     },
+  );
+
+  // ── service tools: the worker holds the credential, the session gets the action ──
+  const guarded = (
+    keys: string[],
+    run: (args: never) => Promise<string>,
+  ) => async (args: unknown) => {
+    const why = missing(config as unknown as Record<string, unknown>, keys);
+    if (why) return { content: [{ type: "text" as const, text: why }], isError: true };
+    try {
+      return { content: [{ type: "text" as const, text: await run(args as never) }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: errorText(err) }], isError: true };
+    }
+  };
+
+  server.registerTool(
+    "github",
+    {
+      title: "GitHub API",
+      description: GITHUB_TOOL_DESCRIPTION,
+      inputSchema: githubInputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    guarded(["GITHUB_TOKEN"], (args) => github(config as GithubConfig, args, defaultGithubDeps)),
+  );
+
+  server.registerTool(
+    "strava",
+    {
+      title: "Strava activities",
+      description: STRAVA_TOOL_DESCRIPTION,
+      inputSchema: stravaInputSchema,
+      // The OAuth refresh is a side effect, but the tool is a read.
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    guarded(["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"], (args) =>
+      strava(config as StravaConfig, args, { ...defaultStravaDeps, db: deps.db })),
+  );
+
+  server.registerTool(
+    "bsky",
+    {
+      title: "Act on Bluesky",
+      description: BSKY_TOOL_DESCRIPTION,
+      inputSchema: bskyInputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true },
+    },
+    guarded(["MUNINN_BSKY_HANDLE", "MUNINN_BSKY_APP_PASSWORD"], (args) =>
+      bsky(config as BskyConfig, args, defaultBskyDeps)),
+  );
+
+  server.registerTool(
+    "gateway",
+    {
+      title: "Gemini via Cloudflare AI Gateway",
+      description: GATEWAY_TOOL_DESCRIPTION,
+      inputSchema: gatewayInputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    guarded(["CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN"], (args) =>
+      gateway(config as GatewayConfig, args, defaultGatewayDeps)),
   );
 
   return server;

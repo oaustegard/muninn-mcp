@@ -349,7 +349,15 @@ const toolText = (r: Rpc) =>
   const byName = Object.fromEntries(tools.map((t) => [t.name, t.description]));
   eq("the read and write tools plus the docs and boot doors are registered",
      tools.map((t) => t.name).sort(),
-     ["boot", "forget", "memory_get", "muninn_config", "muninn_docs", "recall", "remember"]);
+     ["boot", "bsky", "forget", "gateway", "github", "memory_get", "muninn_config", "muninn_docs", "recall", "remember", "strava"]);
+  // 0.3.0: the four service tools register regardless of configuration — the
+  // tool list must not vary with which secrets are set — and an unconfigured
+  // one answers per call, naming the secret, instead of vanishing.
+  {
+    const r = await rpc("tools/call", { name: "github", arguments: { op: "rest", path: "/user" } });
+    eq("an unconfigured service tool errors per call", r.result?.isError, true);
+    eq("...and names the secret to set", String((r.result as any)?.content?.[0]?.text).includes("GITHUB_TOKEN"), true);
+  }
   // §9 item 6: boot is BOTH a tool and a resource, because a resource is
   // something a client offers a user to attach, and boot must fire on its own.
   eq("boot takes no arguments",
