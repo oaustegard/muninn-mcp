@@ -28,6 +28,8 @@ import {
   formatRelativeAge,
   formatTimeAnchor,
   groupOpsByTopic,
+  paginateBoot,
+  renderBootPart,
   loadIncompleteTasks,
   loadOpsTopics,
   parseReminderMeta,
@@ -539,6 +541,38 @@ const cfg = (key: string, value: unknown, over: Record<string, unknown> = {}) =>
      (await lineageSignal(count("3"))).startsWith("lineage: 3 live memories hidden"), true);
   const broken = dep(() => { throw new TypeError("down"); }).db(CFG as never);
   eq("a failed check says so", await lineageSignal(broken), "lineage check failed: TypeError");
+}
+
+// ------------------------------------------------------------- pagination
+
+{
+  eq("a payload under the budget is one part", paginateBoot("short", 100), ["short"]);
+  eq("one part renders with no footer", renderBootPart(paginateBoot("short", 100), 1), "short");
+
+  // Four 40-char entries under a 100-char budget: the heading rollback should
+  // cut at "### " boundaries, never inside an entry's value.
+  const entries = ["a", "b", "c", "d"].map((k) => `### ${k}\n${k.repeat(34)}`);
+  const parts = paginateBoot(entries.join("\n"), 100);
+  eq("parts never exceed the budget", parts.every((p) => p.length <= 100), true);
+  eq("no part starts mid-entry", parts.slice(1).every((p) => p.startsWith("### ")), true);
+  eq("paging loses nothing", parts.join("\n"), entries.join("\n"));
+
+  const first = renderBootPart(parts, 1);
+  eq("part 1 states the payload is incomplete", first.includes("has NOT been delivered"), true);
+  eq("part 1 names the next call", first.includes(`boot({part: 2})`), true);
+  eq("part 1 names where it resumes", first.includes('it resumes at "'), true);
+  const last = renderBootPart(parts, parts.length);
+  eq("the last part says it is complete", last.includes("payload complete"), true);
+  eq("continued parts are labelled", renderBootPart(parts, 2).startsWith("(boot part 2 of "), true);
+  eq("an out-of-range part clamps to the last", renderBootPart(parts, 99), last);
+  eq("part 0 clamps to the first", renderBootPart(parts, 0), first);
+
+  // A heading-light stretch pages on the line boundary rather than rolling all
+  // the way back and emitting a near-empty part.
+  const flat = Array.from({ length: 30 }, (_, i) => `line ${i} ${"x".repeat(20)}`).join("\n");
+  const flatParts = paginateBoot(flat, 100);
+  eq("heading-free text still pages within budget", flatParts.every((p) => p.length <= 100), true);
+  eq("heading-free paging loses nothing", flatParts.join("\n"), flat);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

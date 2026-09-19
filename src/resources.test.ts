@@ -362,8 +362,14 @@ const toolText = (r: Rpc) =>
   }
   // §9 item 6: boot is BOTH a tool and a resource, because a resource is
   // something a client offers a user to attach, and boot must fire on its own.
-  eq("boot takes no arguments",
-     Object.keys(((tools.find((t) => t.name === "boot") as any)?.inputSchema?.properties) ?? {}), []);
+  // `part` is boot's only argument, and it is optional: an unprompted first
+  // call still takes no arguments. It exists because the harness truncates a
+  // tool result at ~25k tokens and the payload is larger (memory c10eef33), so
+  // the tail ships in a second call rather than being dropped.
+  eq("boot takes only an optional part",
+     Object.keys(((tools.find((t) => t.name === "boot") as any)?.inputSchema?.properties) ?? {}), ["part"]);
+  eq("boot requires nothing",
+     ((tools.find((t) => t.name === "boot") as any)?.inputSchema?.required) ?? [], []);
   // Pointer PRESENCE is registry-dependent and therefore asserted against the
   // real registry further down, not here: this block runs on a fixture whose
   // topics are alpha/beta, so no real tool's candidates resolve and — correctly

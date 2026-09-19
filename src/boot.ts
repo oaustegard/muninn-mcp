@@ -1116,6 +1116,112 @@ export async function composeBoot(
   return lineage ? `${text}\n${lineage}\n` : text;
 }
 
+// ------------------------------------------------------------- pagination
+
+/**
+ * The claude.ai harness caps an MCP tool result at ~25k tokens and truncates
+ * what overruns it — silently, mid-line, with no marker in the text. The boot
+ * payload is ~29k tokens, so every boot from a chat session lost its tail: the
+ * 2026-09-19 e2e (memory c10eef33) was cut inside the ops section and never saw
+ * the sections below it.
+ *
+ * Pruning is not the lever — `boot_ledger.report()` owns what belongs in the
+ * payload, and the boot_load filter has already run by the time this sees the
+ * text. So the payload is PAGED. Every byte still ships; it ships in two calls.
+ *
+ * `composeBoot` is deliberately untouched: harness/green.mjs byte-compares its
+ * output against blue's, and that gate is the reason the port is trustworthy.
+ * Paging is a property of the transport, so it lives at the transport.
+ */
+
+/**
+ * ~15k tokens at the ~4 chars/token that prose-plus-config runs at, against a
+ * ~25k cap. The headroom is deliberate: the cap counts the whole tool result,
+ * tokenization of config values is worse than prose, and a part that overruns
+ * fails the same silent way this exists to prevent.
+ */
+export const BOOT_PART_CHARS = 60_000;
+
+/**
+ * Split at line boundaries, preferring a section heading so a part never ends
+ * mid-entry. `### key` and `# SECTION` are the only headings the formatter
+ * emits (see `formatEntry` and `formatBootOutput`).
+ *
+ * Returns at least one part, always — an empty payload pages as `[""]` rather
+ * than as an empty list a caller would have to special-case.
+ */
+export function paginateBoot(text: string, maxChars = BOOT_PART_CHARS): string[] {
+  if (text.length <= maxChars) return [text];
+  const lines = text.split("\n");
+  const parts: string[] = [];
+  let buf: string[] = [];
+  let len = 0;
+
+  const flush = () => {
+    parts.push(buf.join("\n"));
+    buf = [];
+    len = 0;
+  };
+
+  for (const line of lines) {
+    // +1 for the newline that will rejoin it.
+    if (buf.length && len + line.length + 1 > maxChars) {
+      // Roll back to the last heading, but only if that keeps the part
+      // reasonably full — otherwise a heading-light stretch would page thin.
+      let cut = -1;
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i].startsWith("#")) { cut = i; break; }
+      }
+      if (cut > 0 && buf.slice(0, cut).join("\n").length >= maxChars * 0.7) {
+        const carry = buf.slice(cut);
+        buf = buf.slice(0, cut);
+        flush();
+        buf = carry;
+        len = carry.join("\n").length;
+      } else {
+        flush();
+      }
+    }
+    buf.push(line);
+    len += line.length + 1;
+  }
+  if (buf.length) flush();
+  return parts.length ? parts : [""];
+}
+
+/** The first heading in a part, for telling the caller where the next one picks up. */
+function firstHeading(part: string): string | null {
+  for (const line of part.split("\n")) {
+    if (line.startsWith("#")) return line.replace(/^#+\s*/, "").trim() || null;
+  }
+  return null;
+}
+
+/**
+ * One part, wrapped in the lines that tell the model what it is holding.
+ *
+ * The footer is an instruction, not a note: a part that merely said "truncated"
+ * would reproduce the failure it exists to fix, because a model that has just
+ * been handed 15k tokens of operating rules will read them and reply.
+ */
+export function renderBootPart(parts: string[], index: number): string {
+  const n = parts.length;
+  if (n <= 1) return parts[0] ?? "";
+  const i = Math.min(Math.max(Math.trunc(index) || 1, 1), n);
+  const body = parts[i - 1];
+  const out = i === 1 ? [body] : [`(boot part ${i} of ${n}, continued)`, body];
+  if (i < n) {
+    const next = firstHeading(parts[i]);
+    out.push(
+      `\n───\nboot part ${i} of ${n}. The rest of the payload has NOT been delivered.` +
+      `\nCall boot({part: ${i + 1}}) now, before replying${next ? `; it resumes at "${next}"` : ""}.`,
+    );
+  } else {
+    out.push(`\n───\nboot part ${i} of ${n} — payload complete.`);
+  }
+  return out.join("\n");
+}
+
 /** integrity.py::HIDDEN_LIVE_SQL. Served by idx_memories_active. */
 export const HIDDEN_LIVE_SQL =
   "SELECT COUNT(*) AS n FROM memories " +

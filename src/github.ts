@@ -32,7 +32,15 @@ export interface GithubDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export const defaultGithubDeps: GithubDeps = { fetch: globalThis.fetch };
+/**
+ * `fetch` is wrapped, never handed over as a bare reference. The Workers
+ * runtime's `fetch` is a method that checks its `this`: detaching it
+ * (`{ fetch: globalThis.fetch }`) makes every call throw "Illegal invocation:
+ * function called with incorrect `this` reference" before a request leaves the
+ * isolate. Diagnosed 2026-09-19 — all four github ops failed identically while
+ * bsky/econ/gateway/strava, which all wrap, were fine.
+ */
+export const defaultGithubDeps: GithubDeps = { fetch: (...args) => fetch(...args) };
 
 export const GITHUB_API = "https://api.github.com";
 /** GitHub 401s without a User-Agent — see ops github-procedures §2. */

@@ -21,7 +21,7 @@ import {
   registerDocLayer,
   type DocRegistry,
 } from "./resources.ts";
-import { composeBoot, defaultBootDeps, type BootDeps } from "./boot.ts";
+import { composeBoot, defaultBootDeps, paginateBoot, renderBootPart, type BootDeps } from "./boot.ts";
 import { configSet, forget, formatWrite, remember, type WriteDeps } from "./writes.ts";
 import { github, githubInputSchema, GITHUB_TOOL_DESCRIPTION, defaultGithubDeps, type GithubConfig } from "./github.ts";
 import { strava, stravaInputSchema, STRAVA_TOOL_DESCRIPTION, defaultStravaDeps, type StravaConfig } from "./strava.ts";
@@ -30,7 +30,7 @@ import { gateway, gatewayInputSchema, GATEWAY_TOOL_DESCRIPTION, defaultGatewayDe
 import { econ, econInputSchema, ECON_TOOL_DESCRIPTION, defaultEconDeps, type EconConfig } from "./econ.ts";
 
 export const SERVER_NAME = "muninn";
-export const SERVER_VERSION = "0.3.3";
+export const SERVER_VERSION = "0.3.4";
 
 /**
  * Service credentials the worker holds so that no container ever does
@@ -347,13 +347,23 @@ export function buildServer(
       description:
         "Load Muninn's identity, operating rules, pending tasks and recent " +
         "context. Call once, as the first action of every conversation, before " +
-        "any reply.",
-      inputSchema: z.object({}),
+        "any reply. The payload exceeds the harness output cap, so it arrives " +
+        "in parts: when a part's footer says to, call boot again with the next " +
+        "`part` before replying.",
+      inputSchema: z.object({
+        part: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Which part of the payload to return (default 1). A part's footer names the next one."),
+      }),
       annotations: { readOnlyHint: true },
     },
-    async () => {
+    async (args: { part?: number }) => {
       try {
-        return { content: [{ type: "text" as const, text: await composeBoot(config, bootDeps) }] };
+        const parts = paginateBoot(await composeBoot(config, bootDeps));
+        return { content: [{ type: "text" as const, text: renderBootPart(parts, args?.part ?? 1) }] };
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: errorText(err) }],

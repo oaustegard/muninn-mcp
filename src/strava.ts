@@ -210,13 +210,22 @@ function mean(xs: Array<number | null | undefined>): number {
   return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : 0.0;
 }
 
-export interface StreamThird { hr: number; watts: number; w_per_hr: number | null }
+export interface StreamThird { hr: number; watts: number | null; w_per_hr: number | null }
 
 export interface StreamAnalysis {
   samples: number;
   thirds?: StreamThird[];
   decoupling_pct?: number;
   hr_zone_pct?: Record<string, number>;
+  /**
+   * Whether the activity carried a power stream at all. Blue returns 0.0 for a
+   * missing stream because Python's `mean([])` guard returns 0.0, and the
+   * renderer printed that as "0W" — a measurement, on a ride whose summary said
+   * 337W. Diagnosed 2026-09-19 on activity 20206977704: Strava's estimated
+   * `average_watts` exists for every ride, the `watts` STREAM only for rides
+   * recorded with a power meter. An absent stream is now absent in the output.
+   */
+  has_watts?: boolean;
 }
 
 /**
@@ -244,13 +253,19 @@ export function analyzeStreams(streams: Json): StreamAnalysis {
 
   const seg = (lst: Array<number | null>, a: number, b: number) => (lst.length ? mean(lst.slice(a, b)) : 0.0);
 
+  const hasWatts = w.length > 0;
+
   const thirds: StreamThird[] = [];
   for (let i = 0; i < 3; i++) {
     const a = Math.floor((i * n) / 3);
     const b = Math.floor(((i + 1) * n) / 3);
     const h = seg(hr, a, b);
     const p = seg(w, a, b);
-    thirds.push({ hr: pyRound(h), watts: pyRound(p), w_per_hr: h ? pyRound(p / h, 2) : null });
+    thirds.push({
+      hr: pyRound(h),
+      watts: hasWatts ? pyRound(p) : null,
+      w_per_hr: hasWatts && h ? pyRound(p / h, 2) : null,
+    });
   }
   out.thirds = thirds;
 
@@ -274,6 +289,7 @@ export function analyzeStreams(streams: Json): StreamAnalysis {
   out.hr_zone_pct = tot
     ? Object.fromEntries(Object.entries(zones).map(([k, v]) => [k, pyRound((v / tot) * 100)]))
     : {};
+  out.has_watts = hasWatts;
   return out;
 }
 
@@ -310,8 +326,13 @@ export function formatAnalysis(an: StreamAnalysis): string {
   const lines = [`Analysis (${an.samples} samples):`];
   if (an.thirds) {
     lines.push("  thirds: " + an.thirds
-      .map((t, i) => `[${i + 1}] ${t.hr}bpm ${t.watts}W ${t.w_per_hr === null ? "—" : t.w_per_hr + "W/bpm"}`)
+      .map((t, i) => t.watts === null
+        ? `[${i + 1}] ${t.hr}bpm`
+        : `[${i + 1}] ${t.hr}bpm ${t.watts}W ${t.w_per_hr === null ? "—" : t.w_per_hr + "W/bpm"}`)
       .join("  "));
+  }
+  if (an.has_watts === false) {
+    lines.push("  no power stream on this activity — any avg/NP watts above is Strava's estimate, and Pw:HR decoupling is unavailable");
   }
   if (an.decoupling_pct !== undefined) lines.push(`  Pw:HR decoupling: ${an.decoupling_pct}%`);
   if (an.hr_zone_pct && Object.keys(an.hr_zone_pct).length) {

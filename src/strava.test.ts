@@ -1,6 +1,6 @@
 /** `strava` tool: token lifecycle, request shapes, analysis math — fetch and Turso faked. */
 import {
-  strava, analyzeStreams, pyRound, formatRecent, accessToken,
+  strava, analyzeStreams, formatAnalysis, pyRound, formatRecent, accessToken,
   stravaInputSchema, STRAVA_TOOL_DESCRIPTION, TOKEN_KEY,
   type StravaDeps, type StravaConfig,
 } from "./strava.ts";
@@ -193,12 +193,24 @@ eq("pyRound halves to even, like Python", [pyRound(2.5), pyRound(3.5), pyRound(0
     ],
     decoupling_pct: 15.4,
     hr_zone_pct: { "Z1_<120": 17, "Z2_120-140": 17, "Z3_140-155": 17, "Z4_155-167": 17, "Z5_167+": 33 },
+    has_watts: true,
   });
   eq("analyzeStreams: empty streams", analyzeStreams({}), { samples: 0 });
   const hrOnly = analyzeStreams({ heartrate: { data: [120, null, 140] } });
-  // Blue: `round(p / h, 2) if h else None` — h=120 is truthy, p=0.0, so 0, not None.
-  eq("analyzeStreams: no watts → no decoupling, watts 0, w_per_hr 0",
-     [hrOnly.decoupling_pct, hrOnly.thirds![0].watts, hrOnly.thirds![0].w_per_hr], [undefined, 0, 0]);
+  // Blue returns 0.0 here: `mean([])` is 0.0 and `round(p / h, 2) if h else None`
+  // sees a truthy h, so it yields 0, not None. Green departs on purpose — "0W"
+  // rendered as a measured value on a ride that carried no power meter
+  // (2026-09-19, activity 20206977704, summary avg 337W estimated). An absent
+  // stream now reports absent, and has_watts says which case a caller is in.
+  eq("analyzeStreams: no watts → no decoupling, watts null, w_per_hr null",
+     [hrOnly.decoupling_pct, hrOnly.thirds![0].watts, hrOnly.thirds![0].w_per_hr, hrOnly.has_watts],
+     [undefined, null, null, false]);
+  eq("formatAnalysis: a power-less activity says so and prints no watts",
+     formatAnalysis(hrOnly).includes("no power stream on this activity") &&
+     !/\d+W/.test(formatAnalysis(hrOnly)),
+     true);
+  eq("formatAnalysis: a power activity keeps its watts and stays quiet",
+     formatAnalysis(analyzeStreams(STREAMS)).includes("no power stream"), false);
   eq("analyzeStreams: w_per_hr is null only when hr segment is 0",
      analyzeStreams({ heartrate: { data: [null, null, null] }, watts: { data: [200, 200, 200] } }).thirds![0].w_per_hr, null);
   eq("analyzeStreams: nulls are skipped in zones", hrOnly.hr_zone_pct, { "Z1_<120": 0, "Z2_120-140": 50, "Z3_140-155": 50, "Z4_155-167": 0, "Z5_167+": 0 });

@@ -1,7 +1,7 @@
 /** `github` tool: request shapes, the commit_files sequence, errors, truncation — fetch faked. */
 import {
   github, githubInputSchema, truncate, base64Utf8,
-  GITHUB_TOOL_DESCRIPTION, MAX_BODY_CHARS,
+  GITHUB_TOOL_DESCRIPTION, MAX_BODY_CHARS, defaultGithubDeps,
   type GithubDeps,
 } from "./github.ts";
 
@@ -371,6 +371,20 @@ function repoRoute(over: Partial<Record<string, Route>> = {}): { route: Route; r
   eq("schema rejects an unknown op", githubInputSchema.safeParse({ op: "clone" }).success, false);
   eq("schema rejects a bad method", githubInputSchema.safeParse({ op: "rest", path: "/x", method: "HEAD" }).success, false);
   eq("description is a plain paragraph", GITHUB_TOOL_DESCRIPTION.includes("\n"), false);
+}
+
+// ------------------------------------------------------------ fetch binding
+
+{
+  // Node's `fetch` survives detaching; the Workers runtime's does not, and
+  // throws "Illegal invocation: function called with incorrect `this`
+  // reference" before a request leaves the isolate. So this asserts the SHAPE
+  // that kept every github op dead on 2026-09-19 — a bare `globalThis.fetch` —
+  // rather than a behaviour Node can reproduce.
+  eq("defaultGithubDeps wraps fetch instead of detaching it",
+     defaultGithubDeps.fetch !== globalThis.fetch, true);
+  eq("the wrapper still calls through",
+     typeof defaultGithubDeps.fetch === "function" && defaultGithubDeps.fetch.length === 0, true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
